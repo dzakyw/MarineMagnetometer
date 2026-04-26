@@ -40,11 +40,29 @@ def load_data(uploaded_file):
         return {'data': df}
 
 def parse_datetime(df, sheet_name):
-    """Gabungkan Reading_Date dan Reading_Time menjadi kolom datetime (UTC)."""
+    """Gabungkan Reading_Date dan Reading_Time menjadi kolom datetime (UTC).
+       Menangani waktu dengan atau tanpa pecahan detik."""
+    # Gabungkan date dan time menjadi string
+    datetime_str = df['Reading_Date'].astype(str) + ' ' + df['Reading_Time'].astype(str)
     try:
-        df['datetime'] = pd.to_datetime(df['Reading_Date'].astype(str) + ' ' + df['Reading_Time'].astype(str), utc=True)
-    except Exception as e:
-        raise ValueError(f"Sheet '{sheet_name}': gagal parse datetime - {e}")
+        # Pertama coba dengan format umum (tanpa microseconds)
+        df['datetime'] = pd.to_datetime(datetime_str, utc=True, format='%Y-%m-%d %H:%M:%S', errors='raise')
+    except (ValueError, TypeError):
+        try:
+            # Jika gagal, coba dengan format yang menyertakan microseconds
+            df['datetime'] = pd.to_datetime(datetime_str, utc=True, format='%Y-%m-%d %H:%M:%S.%f', errors='raise')
+        except (ValueError, TypeError):
+            try:
+                # Coba dengan format mixed (pandas >= 2.0)
+                df['datetime'] = pd.to_datetime(datetime_str, utc=True, format='mixed')
+            except (ValueError, TypeError):
+                # Terakhir, biarkan pandas menebak
+                df['datetime'] = pd.to_datetime(datetime_str, utc=True, errors='coerce')
+    # Periksa apakah ada nilai NaT
+    if df['datetime'].isna().any():
+        n_invalid = df['datetime'].isna().sum()
+        raise ValueError(f"Sheet '{sheet_name}': {n_invalid} baris tidak dapat di-parse sebagai datetime. "
+                         f"Contoh: {datetime_str.iloc[df['datetime'].isna().idxmax()]}")
     return df
 
 def separate_base_and_survey(df, sheet_name):
