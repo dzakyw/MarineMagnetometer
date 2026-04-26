@@ -347,17 +347,19 @@ if uploaded_file is not None:
             st.pyplot(fig_field)
             plt.close(fig_field)
             
-            # ========== 2. PLOT TMI ==========
+            # ========== 2. PLOT TMI dengan sumbu x = waktu ==========
             st.header("📉 Total Magnetic Intensity (TMI) setelah koreksi")
             fig_tmi, ax_tmi = plt.subplots(figsize=(12, 5))
             for sheet in selected_sheets:
                 df_sheet = plot_df[plot_df['Sheet_Name'] == sheet].sort_values('datetime')
-                ax_tmi.plot(df_sheet['TMI'].values, label=sheet)
-            ax_tmi.set_xlabel('Index (urut waktu per sheet)')
+                ax_tmi.plot(df_sheet['datetime'], df_sheet['TMI'], label=sheet)   # x = datetime, y = TMI
+            ax_tmi.set_xlabel('Waktu (UTC)')
             ax_tmi.set_ylabel('nT')
             ax_tmi.set_title('TMI')
             ax_tmi.legend()
             ax_tmi.grid(True, linestyle=':', alpha=0.5)
+            # Optional: format tanggal agar lebih rapi
+            fig_tmi.autofmt_xdate()  # memutar label tanggal jika perlu
             st.pyplot(fig_tmi)
             plt.close(fig_tmi)
             
