@@ -369,7 +369,7 @@ if uploaded_file is not None:
                 # Buat grid sesuai pilihan
                 if gridding_method == "Tanpa Grid (scatter)":
                     fig_anom, ax_anom = plt.subplots(figsize=(10, 8))
-                    sc = ax_anom.scatter(x, y, c=z, s=10, cmap='viridis', norm=Normalize(vmin=z.min(), vmax=z.max()))
+                    sc = ax_anom.scatter(x, y, c=z, s=10, cmap='jet', norm=Normalize(vmin=z.min(), vmax=z.max()))
                     plt.colorbar(sc, ax=ax_anom, label=f'{anomaly_type} (nT)')
                     if show_track_lines:
                         for sheet in selected_sheets:
@@ -396,7 +396,7 @@ if uploaded_file is not None:
                         X, Y, Z_grid = gridded_anomaly_map(x, y, z, method=grid_meth, grid_resolution=grid_resolution)
                         fig_anom, ax_anom = plt.subplots(figsize=(10, 8))
                         # Plot grid sebagai kontur atau pcolormesh
-                        cf = ax_anom.contourf(X, Y, Z_grid, levels=20, cmap='viridis', alpha=0.8)
+                        cf = ax_anom.contourf(X, Y, Z_grid, levels=20, cmap='jet', alpha=0.8)
                         plt.colorbar(cf, ax=ax_anom, label=f'{anomaly_type} (nT)')
                         # Overlay lintasan hitam
                         if show_track_lines:
