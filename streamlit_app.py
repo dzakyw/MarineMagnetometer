@@ -31,30 +31,33 @@ def load_data(uploaded_file):
 
 def parse_datetime(df):
     """Gabungkan Reading_Date dan Reading_Time menjadi kolom datetime (UTC)"""
-    # Asumsikan format: Reading_Date = 'YYYY-MM-DD', Reading_Time = 'HH:MM:SS'
     try:
         df['datetime'] = pd.to_datetime(df['Reading_Date'].astype(str) + ' ' + df['Reading_Time'].astype(str), utc=True)
     except Exception as e:
-        raise ValueError(f"Gagal parse datetime: {e}. Periksa format kolom Reading_Date dan Reading_Time.")
+        raise ValueError(f"Gagal parse datetime: {e}")
     return df
 
 def separate_base_and_survey(df):
     survey_df = df[df['Field'].notna()].copy()
     base_df = df[df['Tbase'].notna() & df['Fbase'].notna()].copy()
+    
     if not base_df.empty:
-        # Coba gabungkan Reading_Date dengan Tbase (waktu)
+        # Coba dapatkan tanggal dari Reading_Date jika ada
         if 'Reading_Date' in base_df.columns:
             base_df['base_datetime'] = pd.to_datetime(base_df['Reading_Date'].astype(str) + ' ' + base_df['Tbase'].astype(str), utc=True, errors='coerce')
         else:
-            # Jika tidak ada Reading_Date, gunakan tanggal dari survey_df (asumsikan tanggal sama dengan survei)
-            # Ambil tanggal unik dari survey_df, pilih yang paling awal atau beri peringatan
+            # Gunakan tanggal dari survey_df (ambil tanggal unik, asumsikan semua survei sama)
             if not survey_df.empty:
-                # Gunakan tanggal dari survey pertama
+                # Ambil tanggal pertama dari survey_df
                 ref_date = survey_df['datetime'].min().date()
                 base_df['base_datetime'] = pd.to_datetime(ref_date.strftime('%Y-%m-%d') + ' ' + base_df['Tbase'].astype(str), utc=True, errors='coerce')
             else:
                 base_df['base_datetime'] = pd.to_datetime('1970-01-01 ' + base_df['Tbase'].astype(str), utc=True, errors='coerce')
-            st.warning("Kolom Reading_Date tidak ditemukan pada data base. Koreksi diurnal menggunakan tanggal dari data survei pertama.")
+            st.warning("Kolom Reading_Date tidak ditemukan pada data base. Menggunakan tanggal dari data survei pertama.")
+        
+        # Hapus baris dengan NaT
+        base_df = base_df.dropna(subset=['base_datetime'])
+    
     return survey_df, base_df
 
 def hampel_filter(series, window_size=5, n_sigmas=3.0):
@@ -121,29 +124,44 @@ def compute_igrf(lat, lon, alt_m, datetime_obj):
     return F
 
 def compute_diurnal_correction(survey_df, base_df, reference_method='first'):
-    """Koreksi diurnal dengan interpolasi linear dari base_df"""
-    base_df = base_df.dropna(subset=['base_datetime']).sort_values('base_datetime')
+    """
+    Koreksi diurnal dengan interpolasi linear Fbase terhadap waktu.
+    survey_df: harus memiliki kolom 'datetime' (pd.Timestamp)
+    base_df: harus memiliki kolom 'base_datetime' (pd.Timestamp) dan 'Fbase'
+    """
     if base_df.empty:
-        st.warning("Tidak ada data base yang valid untuk koreksi diurnal.")
+        st.warning("Data base kosong, koreksi diurnal = 0")
         return np.zeros(len(survey_df))
     
-    base_times = base_df['base_datetime'].values
-    base_values = base_df['Fbase'].values
-    survey_times = survey_df['datetime'].values
+    # Hapus baris dengan base_datetime NaT
+    base_df = base_df.dropna(subset=['base_datetime']).sort_values('base_datetime')
+    if base_df.empty:
+        st.warning("Tidak ada base datetime yang valid, koreksi diurnal = 0")
+        return np.zeros(len(survey_df))
     
-    # Konversi ke timestamp (float) untuk interpolasi
-    base_ts = np.array([t.timestamp() for t in base_times])
-    survey_ts = np.array([t.timestamp() for t in survey_times])
+    survey_df_valid = survey_df.dropna(subset=['datetime'])
+    if survey_df_valid.empty:
+        st.warning("Tidak ada datetime survei yang valid")
+        return np.zeros(len(survey_df))
     
-    interpolated = np.interp(survey_ts, base_ts, base_values)
+    # Konversi ke timestamp numerik
+    base_ts = base_df['base_datetime'].astype('int64') // 10**9  # detik sejak epoch
+    base_vals = base_df['Fbase'].values
+    survey_ts = survey_df_valid['datetime'].astype('int64') // 10**9
+    
+    interpolated = np.interp(survey_ts, base_ts, base_vals)
     
     if reference_method == 'first':
-        ref_value = base_values[0]
+        ref_val = base_vals[0]
     elif reference_method == 'mean':
-        ref_value = np.mean(base_values)
-    else:
-        ref_value = 0.0
-    return interpolated - ref_value
+        ref_val = np.mean(base_vals)
+    else:  # 'none' atau lainnya
+        ref_val = 0.0
+    
+    # Kembalikan array dengan panjang yang sama dengan survey_df (isi NaN di posisi yang tidak valid jadi 0)
+    correction = np.zeros(len(survey_df))
+    correction[survey_df_valid.index] = interpolated - ref_val
+    return correction
 
 def compute_distance_along_line(df):
     def haversine(lon1, lat1, lon2, lat2):
@@ -235,7 +253,10 @@ if uploaded_file is not None:
             progress_bar = st.progress(0)
             igrf_vals = []
             for i, row in survey_df.iterrows():
-                igrf = compute_igrf(row['Latitude'], row['Longitude'], row['Altitude_filtered'], row['datetime'])
+                if pd.notna(row['Latitude']) and pd.notna(row['Longitude']) and pd.notna(row['Altitude_filtered']) and pd.notna(row['datetime']):
+                    igrf = compute_igrf(row['Latitude'], row['Longitude'], row['Altitude_filtered'], row['datetime'])
+                else:
+                    igrf = np.nan
                 igrf_vals.append(igrf)
                 progress_bar.progress((i+1)/len(survey_df))
             survey_df['IGRF'] = igrf_vals
@@ -267,7 +288,7 @@ if uploaded_file is not None:
         
         if not plot_df.empty:
             # Peta
-            st.subheader("📍 Peta Lintasan")
+            st.subplot(1,2,1) # tidak perlu, tapi biar rapi
             fig_map = px.scatter_mapbox(plot_df, lat="Latitude", lon="Longitude", color="TMI", size=2,
                                         hover_name="Line_Name" if 'Line_Name' in plot_df else None,
                                         hover_data=["TMI"], color_continuous_scale="Viridis")
@@ -275,7 +296,6 @@ if uploaded_file is not None:
             st.plotly_chart(fig_map, use_container_width=True)
             
             # Plot 2D
-            st.subheader("📈 Plot 2D Lintasan")
             fig_scatter = px.scatter(plot_df, x="Longitude", y="Latitude", color="TMI",
                                      color_continuous_scale="Viridis", title="Lintasan diwarnai TMI")
             st.plotly_chart(fig_scatter, use_container_width=True)
@@ -309,4 +329,4 @@ if uploaded_file is not None:
         csv = output_df.to_csv(index=False).encode('utf-8')
         st.download_button("📥 Download CSV", csv, "marine_magnetic_processed.csv", "text/csv")
 else:
-    st.info("⬅️ Upload file Excel atau CSV.")
+    st.info("⬅️ Upload file Excel atau CSV dengan kolom yang sesuai.")
