@@ -113,16 +113,23 @@ def apply_filter(series, method, **params):
     return result
 
 def compute_igrf(lat, lon, alt_m, datetime_obj):
+    """Calculate IGRF total field (F) using the pyIGRF library."""
     alt_km = alt_m / 1000.0
+    
+    # Prepare required decimal year
     year = datetime_obj.year
     day_of_year = datetime_obj.timetuple().tm_yday
-    year_decimal = year + (day_of_year - 1) / 365.25
+    decimal_year = year + (day_of_year - 1) / 365.25
+    
     try:
-        _, _, _, F, _, _ = geomag.mag_field(lat, lon, alt_km, year_decimal)
-    except:
-        F = np.nan
-    return F
-
+        # The pyIGRF.igrf_value function returns a tuple with 7 values.
+        # The seventh value (index 6) is the total intensity (F) in nT.
+        # Example: (D, I, H, X, Y, Z, F)
+        igrf_result = pyIGRF.igrf_value(lat, lon, alt_km, decimal_year)
+        return igrf_result[6] # Returning the 'F' (total intensity) value
+    except Exception as e:
+        st.warning(f"IGRF calculation failed for point {datetime_obj}: {e}")
+        return np.nan
 def compute_diurnal_correction(survey_df, base_df, reference_method='first'):
     """
     Koreksi diurnal dengan interpolasi linear Fbase terhadap waktu.
