@@ -7,7 +7,6 @@ from plotly.subplots import make_subplots
 from scipy.signal import savgol_filter, butter, filtfilt
 from scipy.interpolate import CubicSpline
 from scipy.stats import median_abs_deviation
-from datetime import datetime
 from math import radians, sin, cos, sqrt, atan2
 
 # ================== UTILITY FUNCTIONS ==================
@@ -145,8 +144,8 @@ def compute_distance_along_line(df):
 
 # ================== MAIN STREAMLIT APP ==================
 
-st.set_page_config(page_title="Pengolahan Data Magnetik Kelautan", layout="wide")
-st.title("🌊 Pengolahan Data Magnetik Kelautan + Peta Lintasan")
+st.set_page_config(page_title="Marine Magnetic Processing", layout="wide")
+st.title("🌊 Pengolahan Data Magnetik Kelautan")
 
 uploaded_file = st.sidebar.file_uploader("📂 Upload file Excel/CSV", type=['xlsx', 'csv'])
 
@@ -166,7 +165,7 @@ if uploaded_file is not None:
         st.error("❌ Tidak ada data survei (kolom Field kosong)")
         st.stop()
     if base_df.empty:
-        st.warning("⚠️ Tidak ada data base (Tbase/Fbase kosong). Koreksi diurnal tidak dilakukan.")
+        st.warning("⚠️ Tidak ada data base (Tbase/Fbase). Koreksi diurnal tidak dilakukan.")
 
     st.sidebar.header("🔧 Parameter Filtering")
     
@@ -199,11 +198,14 @@ if uploaded_file is not None:
     constant_igrf = None
     igrf_file = None
     if igrf_option == "Constant value":
-        constant_igrf = st.sidebar.number_input("Masukkan nilai IGRF konstan (nT):", value=45000.0, step=100.0, format="%.1f")
+        constant_igrf = st.sidebar.number_input("Nilai IGRF konstan (nT):", value=45000.0, step=100.0)
     elif igrf_option == "Upload IGRF file (CSV)":
         igrf_file = st.sidebar.file_uploader("Upload CSV dengan kolom 'datetime' atau index dan 'IGRF'", type=['csv'])
-        if igrf_file is not None:
+        if igrf_file:
             st.sidebar.success("File IGRF terupload.")
+
+    # Pilihan untuk peta anomali: menggunakan Field_filtered atau TMI
+    anomaly_type = st.sidebar.selectbox("Peta Anomali menggunakan:", ["Field_filtered", "TMI"])
 
     if st.button("🚀 Proses Filter & Koreksi"):
         with st.spinner("Memproses data..."):
@@ -239,7 +241,7 @@ if uploaded_file is not None:
                     if len(igrf_df) == len(survey_df):
                         survey_df['IGRF'] = igrf_df['IGRF'].values
                     else:
-                        st.error("Panjang file IGRF tidak sama dengan data survei. Gunakan kolom 'datetime' untuk pencocokan.")
+                        st.error("Panjang file IGRF tidak sama dengan data survei.")
                         survey_df['IGRF'] = np.nan
             else:
                 survey_df['IGRF'] = 0.0
@@ -254,98 +256,105 @@ if uploaded_file is not None:
         survey_df = st.session_state['survey_df']
         
         st.subheader("📊 Hasil setelah koreksi (10 baris pertama)")
-        st.dataframe(survey_df[['datetime', 'Field_filtered', 'IGRF', 'Diurnal_Correction', 'TMI']].head(10))
+        st.dataframe(survey_df[['datetime', 'Field', 'Field_filtered', 'IGRF', 'Diurnal_Correction', 'TMI']].head(10))
 
-        # ========== VISUALISASI PETA (HANYA GARIS HITAM + TITIK AWAL/AKHIR) ==========
-        st.header("🗺️ Peta Lintasan Survei")
-        
-        # Plot seluruh data dalam satu peta dengan garis hitam
-        plot_df = survey_df.dropna(subset=['Latitude', 'Longitude']).copy()
+        # ========== 1. PLOT PERBANDINGAN FIELD SEBELUM & SESUDAH FILTER ==========
+        st.header("📈 Perbandingan Field Original vs Filtered")
+        fig_compare_field = go.Figure()
+        fig_compare_field.add_trace(go.Scatter(y=survey_df['Field'], mode='lines', name='Field Original', line=dict(color='gray')))
+        fig_compare_field.add_trace(go.Scatter(y=survey_df['Field_filtered'], mode='lines', name='Field Filtered', line=dict(color='red')))
+        fig_compare_field.update_layout(xaxis_title="Index", yaxis_title="nT", title="Field Sebelum dan Sesudah Filter")
+        st.plotly_chart(fig_compare_field, use_container_width=True)
+
+        # ========== 2. PLOT TMI (opsional) ==========
+        st.subheader("📉 Total Magnetic Intensity (TMI) setelah koreksi")
+        fig_tmi = go.Figure()
+        fig_tmi.add_trace(go.Scatter(y=survey_df['TMI'], mode='lines', name='TMI', line=dict(color='blue')))
+        fig_tmi.update_layout(xaxis_title="Index", yaxis_title="nT")
+        st.plotly_chart(fig_tmi, use_container_width=True)
+
+        # ========== 3. PETA LINTASAN HITAM + START/END ==========
+        st.header("🗺️ Peta Lintasan Survei (Garis Hitam) dengan Titik Awal & Akhir")
+        plot_df = survey_df.dropna(subset=['Latitude', 'Longitude']).sort_values('datetime')
         if not plot_df.empty:
-            # Urutkan berdasarkan datetime untuk garis yang kontinu
-            plot_df = plot_df.sort_values('datetime')
-            
-            fig_map = go.Figure()
-            
-            # Garis hitam tanpa marker
-            fig_map.add_trace(go.Scattermapbox(
+            fig_track = go.Figure()
+            # Garis hitam
+            fig_track.add_trace(go.Scattermapbox(
                 lon=plot_df['Longitude'],
                 lat=plot_df['Latitude'],
                 mode='lines',
                 line=dict(width=2, color='black'),
-                name='Lintasan',
-                showlegend=True
+                name='Lintasan'
             ))
-            
-            # Titik pertama (start) dengan label waktu
+            # Titik awal hijau
             first = plot_df.iloc[0]
-            fig_map.add_trace(go.Scattermapbox(
-                lon=[first['Longitude']],
-                lat=[first['Latitude']],
+            fig_track.add_trace(go.Scattermapbox(
+                lon=[first['Longitude']], lat=[first['Latitude']],
                 mode='markers+text',
                 marker=dict(size=10, color='green'),
                 text=[f"Start: {first['datetime'].strftime('%Y-%m-%d %H:%M:%S')}"],
                 textposition='top right',
                 showlegend=False
             ))
-            
-            # Titik terakhir (end) dengan label waktu
+            # Titik akhir merah
             last = plot_df.iloc[-1]
-            fig_map.add_trace(go.Scattermapbox(
-                lon=[last['Longitude']],
-                lat=[last['Latitude']],
+            fig_track.add_trace(go.Scattermapbox(
+                lon=[last['Longitude']], lat=[last['Latitude']],
                 mode='markers+text',
                 marker=dict(size=10, color='red'),
                 text=[f"End: {last['datetime'].strftime('%Y-%m-%d %H:%M:%S')}"],
                 textposition='top left',
                 showlegend=False
             ))
-            
-            # Atur tampilan peta
-            fig_map.update_layout(
+            fig_track.update_layout(
                 mapbox_style="open-street-map",
-                mapbox=dict(
-                    center=dict(lat=plot_df['Latitude'].mean(), lon=plot_df['Longitude'].mean()),
-                    zoom=8
-                ),
-                margin={"r":0,"t":40,"l":0,"b":0},
-                title="Lintasan survei (garis hitam) – Titik awal (hijau) dan akhir (merah) dengan waktu"
+                mapbox=dict(center=dict(lat=plot_df['Latitude'].mean(), lon=plot_df['Longitude'].mean()), zoom=8),
+                margin=dict(l=0, r=0, t=40, b=0)
             )
-            st.plotly_chart(fig_map, use_container_width=True)
+            st.plotly_chart(fig_track, use_container_width=True)
         else:
-            st.warning("Tidak ada data koordinat yang valid untuk dipetakan.")
-        
-        # ========== PLOT LAINNYA (PROFIL ANOMALI, DLL) TETAP ADA ==========
-        st.header("📉 Profil Anomali TMI Sepanjang Lintasan")
+            st.warning("Tidak ada koordinat valid untuk peta lintasan.")
+
+        # ========== 4. PETA ANOMALI MAGNET (scatter berwarna) ==========
+        st.header(f"🗺️ Peta Anomali Magnet ({anomaly_type})")
+        if not plot_df.empty:
+            anomaly_values = plot_df[anomaly_type]
+            fig_anom = px.scatter_mapbox(
+                plot_df, lat="Latitude", lon="Longitude", color=anomaly_type,
+                size=2, color_continuous_scale="Viridis",
+                hover_data=[anomaly_type, 'datetime'],
+                title=f"Distribusi {anomaly_type} sepanjang lintasan"
+            )
+            fig_anom.update_layout(
+                mapbox_style="open-street-map",
+                mapbox=dict(center=dict(lat=plot_df['Latitude'].mean(), lon=plot_df['Longitude'].mean()), zoom=8),
+                margin=dict(l=0, r=0, t=40, b=0)
+            )
+            st.plotly_chart(fig_anom, use_container_width=True)
+        else:
+            st.warning("Tidak ada data untuk peta anomali.")
+
+        # ========== 5. PROFIL ANOMALI SEPANJANG JARAK (per line atau keseluruhan) ==========
+        st.header("📏 Profil Anomali Sepanjang Jarak")
         if 'Line_Name' in plot_df.columns and len(plot_df['Line_Name'].unique()) > 1:
             for line in plot_df['Line_Name'].unique():
                 line_df = plot_df[plot_df['Line_Name'] == line].sort_values('datetime')
                 if len(line_df) > 1:
                     dist = compute_distance_along_line(line_df)
                     fig_line = go.Figure()
-                    fig_line.add_trace(go.Scatter(x=dist/1000, y=line_df['TMI'], mode='lines+markers', name=line))
-                    fig_line.update_layout(title=f"Line {line}", xaxis_title="Jarak (km)", yaxis_title="TMI (nT)")
+                    fig_line.add_trace(go.Scatter(x=dist/1000, y=line_df[anomaly_type], mode='lines+markers', name=line))
+                    fig_line.update_layout(title=f"Line {line}", xaxis_title="Jarak (km)", yaxis_title=f"{anomaly_type} (nT)")
                     st.plotly_chart(fig_line, use_container_width=True)
         else:
             if len(plot_df) > 1:
                 dist = compute_distance_along_line(plot_df)
                 fig_line = go.Figure()
-                fig_line.add_trace(go.Scatter(x=dist/1000, y=plot_df['TMI'], mode='lines+markers'))
-                fig_line.update_layout(xaxis_title="Jarak (km)", yaxis_title="TMI (nT)")
+                fig_line.add_trace(go.Scatter(x=dist/1000, y=plot_df[anomaly_type], mode='lines+markers'))
+                fig_line.update_layout(xaxis_title="Jarak (km)", yaxis_title=f"{anomaly_type} (nT)")
                 st.plotly_chart(fig_line, use_container_width=True)
-        
-        # Plot perbandingan Field, IGRF, TMI (opsional)
-        st.subheader("📊 Perbandingan Field, IGRF, dan TMI (sampel 500 titik)")
-        sample = plot_df.head(500)
-        fig_comp = go.Figure()
-        fig_comp.add_trace(go.Scatter(y=sample['Field_filtered'], mode='lines', name='Field filtered'))
-        fig_comp.add_trace(go.Scatter(y=sample['IGRF'], mode='lines', name='IGRF'))
-        fig_comp.add_trace(go.Scatter(y=sample['TMI'], mode='lines', name='TMI'))
-        fig_comp.update_layout(xaxis_title="Index", yaxis_title="nT")
-        st.plotly_chart(fig_comp, use_container_width=True)
 
-        # Download hasil
-        st.header("💾 Download Data")
+        # ========== 6. DOWNLOAD DATA ==========
+        st.header("💾 Download Data Hasil")
         output_cols = ['datetime', 'Latitude', 'Longitude', 'Easting', 'Northing',
                        'Field', 'Field_filtered', 'Altitude', 'Altitude_filtered',
                        'Depth', 'Line_Name', 'IGRF', 'Diurnal_Correction', 'TMI']
@@ -353,5 +362,6 @@ if uploaded_file is not None:
         output_df = survey_df[output_cols]
         csv = output_df.to_csv(index=False).encode('utf-8')
         st.download_button("📥 Download CSV", csv, "marine_magnetic_processed.csv", "text/csv")
+
 else:
-    st.info("⬅️ Upload file Excel atau CSV dengan kolom yang diperlukan.")
+    st.info("⬅️ Silakan upload file Excel/CSV dengan kolom yang diperlukan.")
