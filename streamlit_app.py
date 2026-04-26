@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import ppigrf
 import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
@@ -9,7 +8,6 @@ from scipy.signal import savgol_filter, butter, filtfilt
 from scipy.interpolate import CubicSpline
 from scipy.stats import median_abs_deviation
 from datetime import datetime
-import geomag
 from math import radians, sin, cos, sqrt, atan2
 
 # ================== UTILITY FUNCTIONS ==================
@@ -31,7 +29,6 @@ def load_data(uploaded_file):
     return df
 
 def parse_datetime(df):
-    """Gabungkan Reading_Date dan Reading_Time menjadi kolom datetime (UTC)"""
     try:
         df['datetime'] = pd.to_datetime(df['Reading_Date'].astype(str) + ' ' + df['Reading_Time'].astype(str), utc=True)
     except Exception as e:
@@ -41,24 +38,17 @@ def parse_datetime(df):
 def separate_base_and_survey(df):
     survey_df = df[df['Field'].notna()].copy()
     base_df = df[df['Tbase'].notna() & df['Fbase'].notna()].copy()
-    
     if not base_df.empty:
-        # Coba dapatkan tanggal dari Reading_Date jika ada
         if 'Reading_Date' in base_df.columns:
             base_df['base_datetime'] = pd.to_datetime(base_df['Reading_Date'].astype(str) + ' ' + base_df['Tbase'].astype(str), utc=True, errors='coerce')
         else:
-            # Gunakan tanggal dari survey_df (ambil tanggal unik, asumsikan semua survei sama)
             if not survey_df.empty:
-                # Ambil tanggal pertama dari survey_df
                 ref_date = survey_df['datetime'].min().date()
                 base_df['base_datetime'] = pd.to_datetime(ref_date.strftime('%Y-%m-%d') + ' ' + base_df['Tbase'].astype(str), utc=True, errors='coerce')
             else:
                 base_df['base_datetime'] = pd.to_datetime('1970-01-01 ' + base_df['Tbase'].astype(str), utc=True, errors='coerce')
-            st.warning("Kolom Reading_Date tidak ditemukan pada data base. Menggunakan tanggal dari data survei pertama.")
-        
-        # Hapus baris dengan NaT
+            st.warning("Kolom Reading_Date tidak ditemukan untuk data base. Menggunakan tanggal survei pertama.")
         base_df = base_df.dropna(subset=['base_datetime'])
-    
     return survey_df, base_df
 
 def hampel_filter(series, window_size=5, n_sigmas=3.0):
@@ -113,56 +103,25 @@ def apply_filter(series, method, **params):
         result = series.copy()
     return result
 
-def compute_igrf(lat, lon, alt_m, datetime_obj):
-    """Calculate IGRF total field (F) using the ppigrf library."""
-    alt_km = alt_m / 1000.0
-    # The `ppigrf.igrf` function returns (Be, Bn, Bu) where Bn is northward component.
-    # We need to calculate the total field 'F' = sqrt(Be^2 + Bn^2 + Bu^2).
-    try:
-        # Pass longitude first, then latitude, altitude in km, and datetime object
-        Be, Bn, Bu = ppigrf.igrf(lon, lat, alt_km, datetime_obj)
-        total_intensity = np.sqrt(Be**2 + Bn**2 + Bu**2)
-        return total_intensity
-    except Exception as e:
-        st.warning(f"IGRF calculation failed for point {datetime_obj}: {e}")
-        return np.nan
-        
 def compute_diurnal_correction(survey_df, base_df, reference_method='first'):
-    """
-    Koreksi diurnal dengan interpolasi linear Fbase terhadap waktu.
-    survey_df: harus memiliki kolom 'datetime' (pd.Timestamp)
-    base_df: harus memiliki kolom 'base_datetime' (pd.Timestamp) dan 'Fbase'
-    """
     if base_df.empty:
-        st.warning("Data base kosong, koreksi diurnal = 0")
         return np.zeros(len(survey_df))
-    
-    # Hapus baris dengan base_datetime NaT
     base_df = base_df.dropna(subset=['base_datetime']).sort_values('base_datetime')
     if base_df.empty:
-        st.warning("Tidak ada base datetime yang valid, koreksi diurnal = 0")
         return np.zeros(len(survey_df))
-    
     survey_df_valid = survey_df.dropna(subset=['datetime'])
     if survey_df_valid.empty:
-        st.warning("Tidak ada datetime survei yang valid")
         return np.zeros(len(survey_df))
-    
-    # Konversi ke timestamp numerik
-    base_ts = base_df['base_datetime'].astype('int64') // 10**9  # detik sejak epoch
+    base_ts = base_df['base_datetime'].astype('int64') // 10**9
     base_vals = base_df['Fbase'].values
     survey_ts = survey_df_valid['datetime'].astype('int64') // 10**9
-    
     interpolated = np.interp(survey_ts, base_ts, base_vals)
-    
     if reference_method == 'first':
         ref_val = base_vals[0]
     elif reference_method == 'mean':
         ref_val = np.mean(base_vals)
-    else:  # 'none' atau lainnya
+    else:
         ref_val = 0.0
-    
-    # Kembalikan array dengan panjang yang sama dengan survey_df (isi NaN di posisi yang tidak valid jadi 0)
     correction = np.zeros(len(survey_df))
     correction[survey_df_valid.index] = interpolated - ref_val
     return correction
@@ -195,20 +154,20 @@ if uploaded_file is not None:
     df_raw = load_data(uploaded_file)
     st.subheader("📋 Data Awal (10 baris pertama)")
     st.dataframe(df_raw.head(10))
-    
+
     try:
         df_raw = parse_datetime(df_raw)
     except Exception as e:
         st.error(f"❌ Gagal parse datetime: {e}")
         st.stop()
-    
+
     survey_df, base_df = separate_base_and_survey(df_raw)
     if survey_df.empty:
         st.error("❌ Tidak ada data survei (kolom Field kosong)")
         st.stop()
     if base_df.empty:
         st.warning("⚠️ Tidak ada data base (Tbase/Fbase kosong). Koreksi diurnal tidak dilakukan.")
-    
+
     st.sidebar.header("🔧 Parameter Filtering")
     
     # Filter Field
@@ -230,7 +189,24 @@ if uploaded_file is not None:
         alt_params['threshold'] = st.sidebar.slider("Threshold sigma Alt", 1.0, 5.0, 3.0, 0.5)
     elif alt_method in ["Moving Average", "Savitzky-Golay"]:
         alt_params['window'] = st.sidebar.slider("Window size Alt", 3, 51, 11, 2)
+
+    # *************** MANUAL IGRF INPUT ***************
+    st.sidebar.header("🧲 IGRF Source (Manual)")
+    igrf_option = st.sidebar.radio(
+        "Pilih cara input IGRF:",
+        ["Constant value", "Upload IGRF file (CSV)", "Skip IGRF (set to 0)"]
+    )
     
+    constant_igrf = None
+    igrf_file = None
+    if igrf_option == "Constant value":
+        constant_igrf = st.sidebar.number_input("Masukkan nilai IGRF konstan (nT):", value=45000.0, step=100.0, format="%.1f")
+    elif igrf_option == "Upload IGRF file (CSV)":
+        igrf_file = st.sidebar.file_uploader("Upload CSV dengan kolom 'datetime' atau index dan 'IGRF'", type=['csv'])
+        if igrf_file is not None:
+            st.sidebar.success("File IGRF terupload.")
+    # else: Skip -> IGRF = 0
+
     if st.button("🚀 Proses Filter & Koreksi"):
         with st.spinner("Memproses data..."):
             # Filter Field
@@ -252,31 +228,42 @@ if uploaded_file is not None:
                 survey_df['Diurnal_Correction'] = diurnal_corr
             else:
                 survey_df['Diurnal_Correction'] = 0.0
-            
-            # IGRF
-            progress_bar = st.progress(0)
-            igrf_vals = []
-            for i, row in survey_df.iterrows():
-                if pd.notna(row['Latitude']) and pd.notna(row['Longitude']) and pd.notna(row['Altitude_filtered']) and pd.notna(row['datetime']):
-                    igrf = compute_igrf(row['Latitude'], row['Longitude'], row['Altitude_filtered'], row['datetime'])
+
+            # ---------- IGRF Manual ----------
+            if igrf_option == "Constant value":
+                survey_df['IGRF'] = constant_igrf
+            elif igrf_option == "Upload IGRF file (CSV)" and igrf_file is not None:
+                igrf_df = pd.read_csv(igrf_file)
+                # Try to merge based on 'datetime' column if present
+                if 'datetime' in igrf_df.columns:
+                    igrf_df['datetime'] = pd.to_datetime(igrf_df['datetime'], utc=True)
+                    survey_df = survey_df.merge(igrf_df[['datetime', 'IGRF']], on='datetime', how='left')
                 else:
-                    igrf = np.nan
-                igrf_vals.append(igrf)
-                progress_bar.progress((i+1)/len(survey_df))
-            survey_df['IGRF'] = igrf_vals
-            
+                    # Assume same order (merge by index)
+                    if len(igrf_df) == len(survey_df):
+                        survey_df['IGRF'] = igrf_df['IGRF'].values
+                    else:
+                        st.error("Panjang file IGRF tidak sama dengan data survei. Gunakan kolom 'datetime' untuk pencocokan.")
+                        survey_df['IGRF'] = np.nan
+            else:  # Skip
+                survey_df['IGRF'] = 0.0
+
+            # Fill any missing IGRF with 0 or constant? We'll set to 0
+            survey_df['IGRF'] = survey_df['IGRF'].fillna(0.0)
+
+            # TMI calculation
             survey_df['TMI'] = survey_df['Field_filtered'] - survey_df['IGRF'] - survey_df['Diurnal_Correction']
             
             st.session_state['survey_df'] = survey_df
             st.success("✅ Proses selesai!")
-    
+
     if 'survey_df' in st.session_state:
         survey_df = st.session_state['survey_df']
         
         st.subheader("📊 Hasil setelah koreksi (10 baris pertama)")
         st.dataframe(survey_df[['datetime', 'Field_filtered', 'IGRF', 'Diurnal_Correction', 'TMI']].head(10))
-        
-        # Visualisasi
+
+        # ========== VISUALIZATIONS ==========
         st.header("🗺️ Visualisasi Peta dan Lintasan Anomali")
         
         if 'Line_Name' in survey_df.columns:
@@ -291,20 +278,19 @@ if uploaded_file is not None:
             st.info("Kolom Line_Name tidak ditemukan.")
         
         if not plot_df.empty:
-            # Peta
-            st.subplot(1,2,1) # tidak perlu, tapi biar rapi
+            # Map
             fig_map = px.scatter_mapbox(plot_df, lat="Latitude", lon="Longitude", color="TMI", size=2,
                                         hover_name="Line_Name" if 'Line_Name' in plot_df else None,
                                         hover_data=["TMI"], color_continuous_scale="Viridis")
             fig_map.update_layout(mapbox_style="open-street-map", mapbox_zoom=8, margin={"r":0,"t":0,"l":0,"b":0})
             st.plotly_chart(fig_map, use_container_width=True)
             
-            # Plot 2D
+            # 2D scatter
             fig_scatter = px.scatter(plot_df, x="Longitude", y="Latitude", color="TMI",
                                      color_continuous_scale="Viridis", title="Lintasan diwarnai TMI")
             st.plotly_chart(fig_scatter, use_container_width=True)
             
-            # Profil jarak
+            # Profile per line
             st.subheader("📉 Profil Anomali TMI")
             if 'Line_Name' in plot_df.columns:
                 for line in plot_df['Line_Name'].unique():
@@ -323,7 +309,7 @@ if uploaded_file is not None:
                     fig_line.update_layout(xaxis_title="Jarak (km)", yaxis_title="TMI (nT)")
                     st.plotly_chart(fig_line, use_container_width=True)
         
-        # Download
+        # Download result
         st.header("💾 Download Data")
         output_cols = ['datetime', 'Latitude', 'Longitude', 'Easting', 'Northing',
                        'Field', 'Field_filtered', 'Altitude', 'Altitude_filtered',
@@ -333,4 +319,4 @@ if uploaded_file is not None:
         csv = output_df.to_csv(index=False).encode('utf-8')
         st.download_button("📥 Download CSV", csv, "marine_magnetic_processed.csv", "text/csv")
 else:
-    st.info("⬅️ Upload file Excel atau CSV dengan kolom yang sesuai.")
+    st.info("⬅️ Upload file Excel atau CSV dengan kolom yang diperlukan.")
