@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import pyIGRF
+import ppigrf
 import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
@@ -114,23 +114,19 @@ def apply_filter(series, method, **params):
     return result
 
 def compute_igrf(lat, lon, alt_m, datetime_obj):
-    """Calculate IGRF total field (F) using the pyIGRF library."""
+    """Calculate IGRF total field (F) using the ppigrf library."""
     alt_km = alt_m / 1000.0
-    
-    # Prepare required decimal year
-    year = datetime_obj.year
-    day_of_year = datetime_obj.timetuple().tm_yday
-    decimal_year = year + (day_of_year - 1) / 365.25
-    
+    # The `ppigrf.igrf` function returns (Be, Bn, Bu) where Bn is northward component.
+    # We need to calculate the total field 'F' = sqrt(Be^2 + Bn^2 + Bu^2).
     try:
-        # The pyIGRF.igrf_value function returns a tuple with 7 values.
-        # The seventh value (index 6) is the total intensity (F) in nT.
-        # Example: (D, I, H, X, Y, Z, F)
-        igrf_result = pyIGRF.igrf_value(lat, lon, alt_km, decimal_year)
-        return igrf_result[6] # Returning the 'F' (total intensity) value
+        # Pass longitude first, then latitude, altitude in km, and datetime object
+        Be, Bn, Bu = ppigrf.igrf(lon, lat, alt_km, datetime_obj)
+        total_intensity = np.sqrt(Be**2 + Bn**2 + Bu**2)
+        return total_intensity
     except Exception as e:
         st.warning(f"IGRF calculation failed for point {datetime_obj}: {e}")
         return np.nan
+        
 def compute_diurnal_correction(survey_df, base_df, reference_method='first'):
     """
     Koreksi diurnal dengan interpolasi linear Fbase terhadap waktu.
