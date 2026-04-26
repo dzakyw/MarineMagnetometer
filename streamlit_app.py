@@ -2,13 +2,11 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.cm import ScalarMappable
 from matplotlib.colors import Normalize
 from scipy.signal import savgol_filter, butter, filtfilt
 from scipy.interpolate import CubicSpline
 from scipy.stats import median_abs_deviation
 from math import radians, sin, cos, sqrt, atan2
-import io
 
 # ================== UTILITY FUNCTIONS ==================
 
@@ -42,7 +40,6 @@ def load_data(uploaded_file):
 def parse_datetime(df, sheet_name):
     """Gabungkan Reading_Date dan Reading_Time menjadi kolom datetime (UTC).
        Menangani waktu dengan atau tanpa pecahan detik."""
-    # Gabungkan date dan time menjadi string
     datetime_str = df['Reading_Date'].astype(str) + ' ' + df['Reading_Time'].astype(str)
     try:
         # Pertama coba dengan format umum (tanpa microseconds)
@@ -56,13 +53,13 @@ def parse_datetime(df, sheet_name):
                 # Coba dengan format mixed (pandas >= 2.0)
                 df['datetime'] = pd.to_datetime(datetime_str, utc=True, format='mixed')
             except (ValueError, TypeError):
-                # Terakhir, biarkan pandas menebak
+                # Terakhir, biarkan pandas menebak (coerce error jadi NaT)
                 df['datetime'] = pd.to_datetime(datetime_str, utc=True, errors='coerce')
     # Periksa apakah ada nilai NaT
     if df['datetime'].isna().any():
         n_invalid = df['datetime'].isna().sum()
-        raise ValueError(f"Sheet '{sheet_name}': {n_invalid} baris tidak dapat di-parse sebagai datetime. "
-                         f"Contoh: {datetime_str.iloc[df['datetime'].isna().idxmax()]}")
+        example = datetime_str.iloc[df['datetime'].isna().idxmax()]
+        raise ValueError(f"Sheet '{sheet_name}': {n_invalid} baris tidak dapat di-parse. Contoh gagal: '{example}'")
     return df
 
 def separate_base_and_survey(df, sheet_name):
@@ -226,7 +223,7 @@ if uploaded_file is not None:
     anomaly_type = st.sidebar.selectbox("Peta Anomali menggunakan:", ["Field_filtered", "TMI"])
 
     if st.button("🚀 Proses Semua Sheet"):
-        all_results = []  # akan menampung DataFrame hasil per sheet
+        all_results = []
         progress_bar = st.progress(0)
         for idx, sheet in enumerate(sheet_names):
             st.write(f"⏳ Memproses sheet: **{sheet}**")
@@ -258,7 +255,6 @@ if uploaded_file is not None:
             
             # Koreksi diurnal (menggunakan base_df dari sheet ini)
             if not base_df.empty:
-                # Untuk multi-sheet, pilih metode referensi base per sheet? Bisa pakai 'first' default.
                 diurnal_corr = compute_diurnal_correction(survey_df, base_df, reference_method='first')
                 survey_df['Diurnal_Correction'] = diurnal_corr
             else:
@@ -269,7 +265,6 @@ if uploaded_file is not None:
             if igrf_option == "Constant value":
                 survey_df['IGRF'] = constant_igrf
             elif igrf_option == "Upload IGRF file (CSV)" and igrf_file is not None:
-                # Baca file IGRF global
                 igrf_df = pd.read_csv(igrf_file)
                 if 'datetime' in igrf_df.columns:
                     igrf_df['datetime'] = pd.to_datetime(igrf_df['datetime'], utc=True)
@@ -306,7 +301,7 @@ if uploaded_file is not None:
         st.subheader("📊 Hasil gabungan (10 baris pertama)")
         st.dataframe(final_df[['Sheet_Name', 'datetime', 'Field', 'Field_filtered', 'IGRF', 'Diurnal_Correction', 'TMI']].head(10))
         
-        # Pilih sheet untuk ditampilkan (atau semua)
+        # Pilih sheet untuk ditampilkan di plot
         selected_sheets = st.multiselect("Pilih sheet untuk ditampilkan di plot", sheets_present, default=sheets_present)
         plot_df = final_df[final_df['Sheet_Name'].isin(selected_sheets)].copy()
         
@@ -340,21 +335,17 @@ if uploaded_file is not None:
             st.pyplot(fig_tmi)
             plt.close(fig_tmi)
             
-            # ========== 3. PETA LINTASAN HITAM (Matplotlib) ==========
+            # ========== 3. PETA LINTASAN HITAM ==========
             st.header("🗺️ Peta Lintasan Survei (Garis Hitam) dengan Titik Awal & Akhir per Sheet")
-            # Buat satu figure, warna garis berbeda per sheet
             fig_track, ax_track = plt.subplots(figsize=(10, 8))
             for sheet in selected_sheets:
                 df_sheet = plot_df[plot_df['Sheet_Name'] == sheet].dropna(subset=['Latitude', 'Longitude']).sort_values('datetime')
                 if not df_sheet.empty:
-                    # Garis lintasan
                     ax_track.plot(df_sheet['Longitude'], df_sheet['Latitude'], linewidth=1.5, label=sheet)
-                    # Titik awal (hijau) dan akhir (merah) untuk setiap sheet
                     first = df_sheet.iloc[0]
                     last = df_sheet.iloc[-1]
                     ax_track.plot(first['Longitude'], first['Latitude'], 'go', markersize=6)
                     ax_track.plot(last['Longitude'], last['Latitude'], 'ro', markersize=6)
-                    # Anotasi waktu (optional)
                     ax_track.annotate(f"{sheet}\nStart: {first['datetime'].strftime('%H:%M:%S')}", 
                                       (first['Longitude'], first['Latitude']), textcoords="offset points", xytext=(5,5), fontsize=7)
                     ax_track.annotate(f"End: {last['datetime'].strftime('%H:%M:%S')}", 
@@ -367,9 +358,8 @@ if uploaded_file is not None:
             st.pyplot(fig_track)
             plt.close(fig_track)
             
-            # ========== 4. PETA ANOMALI MAGNET (Scatter warna per sheet, atau satu plot?) ==========
+            # ========== 4. PETA ANOMALI MAGNET ==========
             st.header(f"🗺️ Peta Anomali Magnet ({anomaly_type})")
-            # Pilih apakah akan memisahkan per sheet atau digabung
             combine_anom = st.checkbox("Gabungkan semua sheet dalam satu plot", value=True)
             if combine_anom:
                 fig_anom, ax_anom = plt.subplots(figsize=(10, 8))
@@ -378,9 +368,8 @@ if uploaded_file is not None:
                     vmin = anomaly_df[anomaly_type].min()
                     vmax = anomaly_df[anomaly_type].max()
                     norm = Normalize(vmin=vmin, vmax=vmax)
-                    cmap = plt.cm.viridis
                     sc = ax_anom.scatter(anomaly_df['Longitude'], anomaly_df['Latitude'],
-                                         c=anomaly_df[anomaly_type], s=10, cmap=cmap, norm=norm)
+                                         c=anomaly_df[anomaly_type], s=10, cmap='viridis', norm=norm)
                     plt.colorbar(sc, ax=ax_anom, label=f'{anomaly_type} (nT)')
                     ax_anom.set_xlabel('Longitude')
                     ax_anom.set_ylabel('Latitude')
@@ -391,7 +380,6 @@ if uploaded_file is not None:
                     st.warning("Tidak ada data anomali valid.")
                 plt.close(fig_anom)
             else:
-                # Plot per sheet
                 for sheet in selected_sheets:
                     anomaly_df = plot_df[plot_df['Sheet_Name'] == sheet].dropna(subset=[anomaly_type, 'Latitude', 'Longitude'])
                     if not anomaly_df.empty:
@@ -399,9 +387,8 @@ if uploaded_file is not None:
                         vmin = anomaly_df[anomaly_type].min()
                         vmax = anomaly_df[anomaly_type].max()
                         norm = Normalize(vmin=vmin, vmax=vmax)
-                        cmap = plt.cm.viridis
                         sc = ax_anom.scatter(anomaly_df['Longitude'], anomaly_df['Latitude'],
-                                             c=anomaly_df[anomaly_type], s=10, cmap=cmap, norm=norm)
+                                             c=anomaly_df[anomaly_type], s=10, cmap='viridis', norm=norm)
                         plt.colorbar(sc, ax=ax_anom, label=f'{anomaly_type} (nT)')
                         ax_anom.set_xlabel('Longitude')
                         ax_anom.set_ylabel('Latitude')
@@ -410,7 +397,7 @@ if uploaded_file is not None:
                         st.pyplot(fig_anom)
                         plt.close(fig_anom)
             
-            # ========== 5. PROFIL ANOMALI SEPANJANG JARAK (per sheet) ==========
+            # ========== 5. PROFIL ANOMALI SEPANJANG JARAK ==========
             st.header("📏 Profil Anomali Sepanjang Jarak")
             for sheet in selected_sheets:
                 anomaly_df = plot_df[plot_df['Sheet_Name'] == sheet].dropna(subset=[anomaly_type, 'Latitude', 'Longitude']).sort_values('datetime')
