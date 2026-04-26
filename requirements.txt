@@ -1,8 +1,6 @@
-streamlit 
-pandas 
-python < 3.15
-numpy 
-plotly 
-scipy 
-geomapy 
-geomag
+streamlit>=1.28.0
+pandas>=2.0.0
+numpy>=1.24.0
+plotly>=5.17.0
+scipy>=1.10.0
+geomag>=0.6.0
