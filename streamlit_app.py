@@ -8,7 +8,7 @@ from scipy.signal import savgol_filter, butter, filtfilt
 from scipy.interpolate import CubicSpline
 from scipy.stats import median_abs_deviation
 from datetime import datetime
-import geomag
+import pyIGRF
 from math import radians, sin, cos, sqrt, atan2
 
 # ================== UTILITY FUNCTIONS ==================
