@@ -149,21 +149,28 @@ def compute_diurnal_correction(survey_df, base_df, reference_method='first'):
     base_df = base_df.dropna(subset=['base_datetime']).sort_values('base_datetime')
     if base_df.empty:
         return np.zeros(len(survey_df))
-    survey_df_valid = survey_df.dropna(subset=['datetime'])
+    
+    survey_df_valid = survey_df.dropna(subset=['datetime']).copy()
     if survey_df_valid.empty:
         return np.zeros(len(survey_df))
+    
     base_ts = base_df['base_datetime'].astype('int64') // 10**9
     base_vals = base_df['Fbase'].values
     survey_ts = survey_df_valid['datetime'].astype('int64') // 10**9
+    
     interpolated = np.interp(survey_ts, base_ts, base_vals)
+    
     if reference_method == 'first':
         ref_val = base_vals[0]
     elif reference_method == 'mean':
         ref_val = np.mean(base_vals)
     else:
         ref_val = 0.0
+    
     correction = np.zeros(len(survey_df))
-    correction[survey_df_valid.index] = interpolated - ref_val
+    # Assign using integer indexing
+    for pos, idx in enumerate(survey_df_valid.index):
+        correction[idx] = interpolated[pos] - ref_val
     return correction
 
 def compute_distance_along_line(df):
