@@ -5,3 +5,4 @@ plotly>=5.17.0
 scipy>=1.10.0
 pyIGRF>=1.0.0
 openpyxl>=3.1.0
+ppigrf
