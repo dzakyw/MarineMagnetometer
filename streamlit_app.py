@@ -6,8 +6,8 @@ from matplotlib.colors import Normalize
 from scipy.signal import savgol_filter, butter, filtfilt
 from scipy.interpolate import CubicSpline
 from scipy.stats import median_abs_deviation
-from scipy.spatial import KDTree
 from math import radians, sin, cos, sqrt, atan2
+from scipy.spatial import cKDTree
 
 # ================== UTILITY FUNCTIONS ==================
 
@@ -27,9 +27,8 @@ def clean_numeric_columns(df, columns):
 def load_data(uploaded_file):
     if uploaded_file.name.endswith('.xlsx'):
         xl = pd.ExcelFile(uploaded_file)
-        sheet_names = xl.sheet_names
         sheets = {}
-        for sheet in sheet_names:
+        for sheet in xl.sheet_names:
             df = pd.read_excel(uploaded_file, sheet_name=sheet)
             all_cols = ['Reading_Date', 'Reading_Time', 'Latitude', 'Longitude', 'Easting', 'Northing',
                         'Field', 'Altitude', 'Depth', 'Fbase', 'Tbase']
@@ -48,9 +47,6 @@ def load_data(uploaded_file):
         return {'data': df}
 
 def parse_datetime(df, sheet_name):
-    for col in ['Reading_Date', 'Reading_Time']:
-        if col in df.columns:
-            df[col] = df[col].astype(str).replace(['nan', 'NaN', '*', ''], np.nan)
     df_clean = df.dropna(subset=['Reading_Date', 'Reading_Time']).copy()
     if len(df_clean) == 0:
         raise ValueError(f"Sheet '{sheet_name}': Tidak ada baris dengan Reading_Date dan Reading_Time yang valid.")
@@ -78,13 +74,16 @@ def separate_base_and_survey(df, sheet_name):
     base_df = df[df['Tbase'].notna() & df['Fbase'].notna()].copy()
     if not base_df.empty:
         if 'Reading_Date' in base_df.columns:
-            base_df['base_datetime'] = pd.to_datetime(base_df['Reading_Date'].astype(str) + ' ' + base_df['Tbase'].astype(str), utc=True, errors='coerce')
+            base_df['base_datetime'] = pd.to_datetime(base_df['Reading_Date'].astype(str) + ' ' + base_df['Tbase'].astype(str),
+                                                      utc=True, errors='coerce')
         else:
             if not survey_df.empty:
                 ref_date = survey_df['datetime'].min().date()
-                base_df['base_datetime'] = pd.to_datetime(ref_date.strftime('%Y-%m-%d') + ' ' + base_df['Tbase'].astype(str), utc=True, errors='coerce')
+                base_df['base_datetime'] = pd.to_datetime(ref_date.strftime('%Y-%m-%d') + ' ' + base_df['Tbase'].astype(str),
+                                                          utc=True, errors='coerce')
             else:
-                base_df['base_datetime'] = pd.to_datetime('1970-01-01 ' + base_df['Tbase'].astype(str), utc=True, errors='coerce')
+                base_df['base_datetime'] = pd.to_datetime('1970-01-01 ' + base_df['Tbase'].astype(str),
+                                                          utc=True, errors='coerce')
             st.warning(f"Sheet '{sheet_name}': Kolom Reading_Date tidak ditemukan untuk data base. Menggunakan tanggal survei pertama.")
         base_df = base_df.dropna(subset=['base_datetime'])
     return survey_df, base_df
@@ -181,56 +180,10 @@ def compute_distance_along_line(df):
         distances.append(distances[-1] + d)
     return np.array(distances)
 
-def find_crossovers(df, anomaly_col, distance_threshold_m=30):
-    """Deteksi titik crossover antar titik survei dengan jarak <= threshold."""
-    if 'Sheet_Name' not in df.columns:
-        df = df.copy()
-        df['Sheet_Name'] = 'single'
-    
-    valid = df.dropna(subset=['Latitude', 'Longitude', anomaly_col])
-    coords = valid[['Latitude', 'Longitude']].values
-    n = len(coords)
-    if n < 2:
-        return pd.DataFrame()
-    
-    # Konversi threshold ke derajat (kira-kira 1 derajat = 111 km)
-    radius_deg = distance_threshold_m / 111000.0
-    tree = KDTree(coords)
-    crossovers = []
-    for i in range(n):
-        # Cari tetangga dalam radius_deg (termasuk diri sendiri)
-        indices = tree.query_ball_point(coords[i], radius_deg)
-        for j in indices:
-            if j <= i:
-                continue
-            # Hitung ulang jarak dengan haversine untuk akurasi
-            lat1, lon1 = coords[i]
-            lat2, lon2 = coords[j]
-            d = compute_distance_along_line(pd.DataFrame({'Latitude': [lat1, lat2], 'Longitude': [lon1, lon2]}))[1]
-            if d <= distance_threshold_m:
-                row_i = valid.iloc[i]
-                row_j = valid.iloc[j]
-                crossovers.append({
-                    'Latitude': (lat1 + lat2) / 2,
-                    'Longitude': (lon1 + lon2) / 2,
-                    'Sheet_1': row_i['Sheet_Name'],
-                    'Sheet_2': row_j['Sheet_Name'],
-                    'Index_1': row_i.name,
-                    'Index_2': row_j.name,
-                    f'{anomaly_col}_1': row_i[anomaly_col],
-                    f'{anomaly_col}_2': row_j[anomaly_col],
-                    'Difference_nT': row_i[anomaly_col] - row_j[anomaly_col],
-                    'Distance_m': d
-                })
-    if crossovers:
-        return pd.DataFrame(crossovers)
-    else:
-        return pd.DataFrame()
-
 # ================== MAIN STREAMLIT APP ==================
 
-st.set_page_config(page_title="Marine Magnetic Processing (Multi‑Sheet dengan Crossover)", layout="wide")
-st.title("🌊 Pengolahan Data Magnetik Kelautan – Deteksi Crossover")
+st.set_page_config(page_title="Marine Magnetic Processing (Multi‑Sheet)", layout="wide")
+st.title("🌊 Pengolahan Data Magnetik Kelautan – Multi Sheet")
 
 uploaded_file = st.sidebar.file_uploader("📂 Upload file Excel (multi‑sheet) atau CSV", type=['xlsx', 'csv'])
 
@@ -239,9 +192,7 @@ if uploaded_file is not None:
     sheet_names = list(all_sheets.keys())
     st.subheader(f"📑 Sheet yang terdeteksi: {', '.join(sheet_names)}")
     
-    st.sidebar.header("🔧 Parameter Filtering")
-    
-    # Filter Field
+    st.sidebar.header("🔧 Parameter Filtering (diterapkan ke semua sheet)")
     field_method = st.sidebar.selectbox("Filter Field", ["None", "Hampel (despiking)", "Moving Average", "Savitzky-Golay", "Butterworth Lowpass"])
     field_params = {}
     if field_method == "Hampel (despiking)":
@@ -252,7 +203,6 @@ if uploaded_file is not None:
     elif field_method == "Butterworth Lowpass":
         field_params['cutoff'] = st.sidebar.slider("Cutoff frequency (0-0.5)", 0.01, 0.5, 0.1, 0.01)
     
-    # Filter Altitude
     alt_method = st.sidebar.selectbox("Filter Altitude", ["None", "Hampel (despiking)", "Moving Average", "Savitzky-Golay"])
     alt_params = {}
     if alt_method == "Hampel (despiking)":
@@ -261,8 +211,7 @@ if uploaded_file is not None:
     elif alt_method in ["Moving Average", "Savitzky-Golay"]:
         alt_params['window'] = st.sidebar.slider("Window size Alt", 3, 51, 11, 2)
 
-    # IGRF
-    st.sidebar.header("🧲 IGRF Source")
+    st.sidebar.header("🧲 IGRF Source (Manual, berlaku untuk semua sheet)")
     igrf_option = st.sidebar.radio("Pilih cara input IGRF:", ["Constant value", "Upload IGRF file (CSV)", "Skip IGRF (set to 0)"])
     constant_igrf = None
     igrf_file = None
@@ -274,11 +223,6 @@ if uploaded_file is not None:
             st.sidebar.success("File IGRF terupload.")
 
     anomaly_type = st.sidebar.selectbox("Peta Anomali menggunakan:", ["Field_filtered", "TMI"])
-    
-    # Crossover
-    st.sidebar.header("🔀 Deteksi Crossover")
-    crossover_distance = st.sidebar.number_input("Jarak maksimum crossover (meter)", min_value=1, max_value=500, value=30, step=5)
-    detect_crossover = st.sidebar.checkbox("Deteksi titik crossover dan tandai di peta", value=True)
 
     if st.button("🚀 Proses Semua Sheet"):
         all_results = []
@@ -291,28 +235,24 @@ if uploaded_file is not None:
             except Exception as e:
                 st.error(f"Sheet {sheet}: {e}")
                 continue
-            
             survey_df, base_df = separate_base_and_survey(df_raw, sheet)
             if survey_df.empty:
                 st.warning(f"Sheet {sheet}: Tidak ada data survei (Field kosong). Dilewati.")
                 continue
-            
             if field_method != "None":
                 survey_df['Field_filtered'] = apply_filter(survey_df['Field'], field_method, **field_params)
             else:
                 survey_df['Field_filtered'] = survey_df['Field']
-            
             if alt_method != "None" and survey_df['Altitude'].notna().any():
                 survey_df['Altitude_filtered'] = apply_filter(survey_df['Altitude'], alt_method, **alt_params)
             else:
                 survey_df['Altitude_filtered'] = survey_df['Altitude']
-            
             if not base_df.empty:
                 diurnal_corr = compute_diurnal_correction(survey_df, base_df, reference_method='first')
                 survey_df['Diurnal_Correction'] = diurnal_corr
             else:
                 survey_df['Diurnal_Correction'] = 0.0
-            
+                st.info(f"Sheet {sheet}: Tidak ada data base -> koreksi diurnal = 0")
             if igrf_option == "Constant value":
                 survey_df['IGRF'] = constant_igrf
             elif igrf_option == "Upload IGRF file (CSV)" and igrf_file is not None:
@@ -328,14 +268,11 @@ if uploaded_file is not None:
                         survey_df['IGRF'] = 0.0
             else:
                 survey_df['IGRF'] = 0.0
-            
             survey_df['IGRF'] = survey_df['IGRF'].fillna(0.0)
             survey_df['TMI'] = survey_df['Field_filtered'] - survey_df['IGRF'] - survey_df['Diurnal_Correction']
             survey_df['Sheet_Name'] = sheet
-            
             all_results.append(survey_df)
             progress_bar.progress((idx+1)/len(sheet_names))
-        
         if all_results:
             final_df = pd.concat(all_results, ignore_index=True)
             st.session_state['final_df'] = final_df
@@ -346,7 +283,6 @@ if uploaded_file is not None:
     if 'final_df' in st.session_state:
         final_df = st.session_state['final_df']
         sheets_present = final_df['Sheet_Name'].unique()
-        
         st.subheader("📊 Hasil gabungan (10 baris pertama)")
         st.dataframe(final_df[['Sheet_Name', 'datetime', 'Field', 'Field_filtered', 'IGRF', 'Diurnal_Correction', 'TMI']].head(10))
         
@@ -354,7 +290,7 @@ if uploaded_file is not None:
         plot_df = final_df[final_df['Sheet_Name'].isin(selected_sheets)].copy()
         
         if not plot_df.empty:
-            # Plot Field original vs filtered
+            # Perbandingan Field
             st.header("📈 Perbandingan Field Original vs Filtered")
             fig_field, ax_field = plt.subplots(figsize=(12, 5))
             for sheet in selected_sheets:
@@ -363,33 +299,28 @@ if uploaded_file is not None:
                 ax_field.plot(df_sheet['Field_filtered'].values, '-', alpha=0.8, label=f'{sheet} Filtered')
             ax_field.set_xlabel('Index')
             ax_field.set_ylabel('nT')
+            ax_field.set_title('Field Original vs Filtered')
             ax_field.legend(loc='best', fontsize=8, ncol=2)
-            ax_field.grid(True)
+            ax_field.grid(True, linestyle=':', alpha=0.5)
             st.pyplot(fig_field)
             plt.close(fig_field)
             
-            # Plot TMI
-            # ========== 2. PLOT TMI per sheet dengan sumbu x waktu ==========
-            st.header("📉 Total Magnetic Intensity (TMI) setelah koreksi (per sheet)")
+            # TMI
+            st.header("📉 Total Magnetic Intensity (TMI)")
+            fig_tmi, ax_tmi = plt.subplots(figsize=(12, 5))
             for sheet in selected_sheets:
                 df_sheet = plot_df[plot_df['Sheet_Name'] == sheet].sort_values('datetime')
-                if not df_sheet.empty:
-                    fig_tmi, ax_tmi = plt.subplots(figsize=(12, 5))
-                    ax_tmi.plot(df_sheet['datetime'], df_sheet['TMI'], 'b-', linewidth=1, label=sheet)
-                    ax_tmi.set_xlabel('Waktu (UTC)')
-                    ax_tmi.set_ylabel('TMI (nT)')
-                    ax_tmi.set_title(f'TMI - Sheet {sheet}')
-                    ax_tmi.legend()
-                    ax_tmi.grid(True, linestyle=':', alpha=0.5)
-                    # Rotasi label agar tidak bertumpuk
-                    plt.xticks(rotation=45)
-                    st.pyplot(fig_tmi)
-                    plt.close(fig_tmi)
-                else:
-                    st.info(f"Sheet {sheet}: Tidak ada data TMI untuk diplot.")
+                ax_tmi.plot(df_sheet['TMI'].values, label=sheet)
+            ax_tmi.set_xlabel('Index')
+            ax_tmi.set_ylabel('nT')
+            ax_tmi.set_title('TMI')
+            ax_tmi.legend()
+            ax_tmi.grid(True, linestyle=':', alpha=0.5)
+            st.pyplot(fig_tmi)
+            plt.close(fig_tmi)
             
             # Peta lintasan hitam
-            st.header("🗺️ Peta Lintasan Survei")
+            st.header("🗺️ Peta Lintasan Survei (Garis Hitam) dengan Titik Awal & Akhir per Sheet")
             fig_track, ax_track = plt.subplots(figsize=(10, 8))
             for sheet in selected_sheets:
                 df_sheet = plot_df[plot_df['Sheet_Name'] == sheet].dropna(subset=['Latitude', 'Longitude']).sort_values('datetime')
@@ -399,117 +330,129 @@ if uploaded_file is not None:
                     last = df_sheet.iloc[-1]
                     ax_track.plot(first['Longitude'], first['Latitude'], 'go', markersize=6)
                     ax_track.plot(last['Longitude'], last['Latitude'], 'ro', markersize=6)
-                    ax_track.annotate(f"{sheet}\nStart: {first['datetime'].strftime('%H:%M:%S')}", (first['Longitude'], first['Latitude']), textcoords="offset points", xytext=(5,5), fontsize=7)
-                    ax_track.annotate(f"End: {last['datetime'].strftime('%H:%M:%S')}", (last['Longitude'], last['Latitude']), textcoords="offset points", xytext=(5,-10), fontsize=7)
+                    ax_track.annotate(f"{sheet}\nStart: {first['datetime'].strftime('%H:%M:%S')}", 
+                                      (first['Longitude'], first['Latitude']), textcoords="offset points", xytext=(5,5), fontsize=7)
+                    ax_track.annotate(f"End: {last['datetime'].strftime('%H:%M:%S')}", 
+                                      (last['Longitude'], last['Latitude']), textcoords="offset points", xytext=(5,-10), fontsize=7)
             ax_track.set_xlabel('Longitude')
             ax_track.set_ylabel('Latitude')
-            ax_track.legend()
-            ax_track.grid(True)
+            ax_track.set_title('Lintasan Survei')
+            ax_track.legend(loc='best')
+            ax_track.grid(True, linestyle=':', alpha=0.5)
             st.pyplot(fig_track)
             plt.close(fig_track)
             
-            # Peta anomali
+            # Peta anomali biasa (tanpa crossover)
             st.header(f"🗺️ Peta Anomali Magnet ({anomaly_type})")
-            combine_anom = st.checkbox("Gabungkan semua sheet dalam satu plot", value=True)
-            if combine_anom:
-                fig_anom, ax_anom = plt.subplots(figsize=(10, 8))
-                anomaly_df = plot_df.dropna(subset=[anomaly_type, 'Latitude', 'Longitude'])
-                if not anomaly_df.empty:
-                    vmin, vmax = anomaly_df[anomaly_type].min(), anomaly_df[anomaly_type].max()
-                    norm = Normalize(vmin=vmin, vmax=vmax)
-                    sc = ax_anom.scatter(anomaly_df['Longitude'], anomaly_df['Latitude'],
-                                         c=anomaly_df[anomaly_type], s=10, cmap='viridis', norm=norm)
-                    plt.colorbar(sc, ax=ax_anom, label=f'{anomaly_type} (nT)')
-                    ax_anom.set_xlabel('Longitude')
-                    ax_anom.set_ylabel('Latitude')
-                    ax_anom.set_title(f'Distribusi {anomaly_type} (semua sheet)')
-                    ax_anom.grid(True)
-                    st.pyplot(fig_anom)
-                else:
-                    st.warning("Tidak ada data anomali valid.")
-                plt.close(fig_anom)
+            fig_anom, ax_anom = plt.subplots(figsize=(10, 8))
+            anomaly_df = plot_df.dropna(subset=[anomaly_type, 'Latitude', 'Longitude'])
+            if not anomaly_df.empty:
+                vmin, vmax = anomaly_df[anomaly_type].min(), anomaly_df[anomaly_type].max()
+                norm = Normalize(vmin=vmin, vmax=vmax)
+                sc = ax_anom.scatter(anomaly_df['Longitude'], anomaly_df['Latitude'],
+                                     c=anomaly_df[anomaly_type], s=10, cmap='viridis', norm=norm)
+                plt.colorbar(sc, ax=ax_anom, label=f'{anomaly_type} (nT)')
+                ax_anom.set_xlabel('Longitude')
+                ax_anom.set_ylabel('Latitude')
+                ax_anom.set_title(f'Distribusi {anomaly_type}')
+                ax_anom.grid(True, linestyle=':', alpha=0.5)
+                st.pyplot(fig_anom)
             else:
-                for sheet in selected_sheets:
-                    anomaly_df = plot_df[plot_df['Sheet_Name'] == sheet].dropna(subset=[anomaly_type, 'Latitude', 'Longitude'])
-                    if not anomaly_df.empty:
-                        fig_anom, ax_anom = plt.subplots(figsize=(8, 6))
-                        vmin, vmax = anomaly_df[anomaly_type].min(), anomaly_df[anomaly_type].max()
-                        norm = Normalize(vmin=vmin, vmax=vmax)
-                        sc = ax_anom.scatter(anomaly_df['Longitude'], anomaly_df['Latitude'],
-                                             c=anomaly_df[anomaly_type], s=10, cmap='viridis', norm=norm)
-                        plt.colorbar(sc, ax=ax_anom, label=f'{anomaly_type} (nT)')
-                        ax_anom.set_xlabel('Longitude')
-                        ax_anom.set_ylabel('Latitude')
-                        ax_anom.set_title(f'{sheet} - {anomaly_type}')
-                        ax_anom.grid(True)
-                        st.pyplot(fig_anom)
-                        plt.close(fig_anom)
+                st.warning("Tidak ada data anomali valid.")
+            plt.close(fig_anom)
             
-            # Crossover
-            if detect_crossover:
-                st.header("🔀 Titik Crossover (Persimpangan Lintasan)")
-                crossover_df = find_crossovers(plot_df, anomaly_type, distance_threshold_m=crossover_distance)
-                if not crossover_df.empty:
-                    st.success(f"Ditemukan {len(crossover_df)} titik crossover dengan jarak ≤ {crossover_distance} m")
-                    st.dataframe(crossover_df)
-                    
-                    # Peta crossover
-                    fig_cross, ax_cross = plt.subplots(figsize=(10, 8))
-                    # Plot semua titik latar abu-abu
-                    all_pts = plot_df.dropna(subset=['Latitude', 'Longitude'])
-                    ax_cross.scatter(all_pts['Longitude'], all_pts['Latitude'], c='lightgray', s=2, alpha=0.5)
-                    for sheet in selected_sheets:
-                        df_sheet = plot_df[plot_df['Sheet_Name'] == sheet].dropna(subset=['Latitude', 'Longitude']).sort_values('datetime')
-                        if not df_sheet.empty:
-                            ax_cross.plot(df_sheet['Longitude'], df_sheet['Latitude'], linewidth=1, alpha=0.7)
-                    ax_cross.scatter(crossover_df['Longitude'], crossover_df['Latitude'], c='red', s=40, marker='o', label='Crossover', zorder=5)
-                    for _, row in crossover_df.iterrows():
-                        ax_cross.annotate(f"{row['Difference_nT']:.1f} nT", (row['Longitude'], row['Latitude']),
-                                          textcoords="offset points", xytext=(5,5), fontsize=8, color='red')
-                    ax_cross.set_xlabel('Longitude')
-                    ax_cross.set_ylabel('Latitude')
-                    ax_cross.set_title('Titik Crossover (merah) dengan selisih anomali (nT)')
-                    ax_cross.legend()
-                    ax_cross.grid(True)
-                    st.pyplot(fig_cross)
-                    plt.close(fig_cross)
-                    
-                    # Histogram selisih
-                    fig_hist, ax_hist = plt.subplots()
-                    ax_hist.hist(crossover_df['Difference_nT'], bins=20, edgecolor='black')
-                    ax_hist.set_xlabel('Selisih (nT)')
-                    ax_hist.set_ylabel('Frekuensi')
-                    ax_hist.set_title('Distribusi Selisih Nilai Anomali di Crossover')
-                    st.pyplot(fig_hist)
-                    plt.close(fig_hist)
+            # DETEKSI CROSSOVER
+            st.header("🔀 Deteksi Crossover (Persilangan Lintasan)")
+            if st.checkbox("Deteksi titik crossover antar lintasan", value=False):
+                if 'Easting' in plot_df.columns and 'Northing' in plot_df.columns:
+                    distance_thresh = st.number_input("Jarak threshold untuk crossover (meter)", value=10.0, step=1.0, format="%.1f")
+                    crossover_input = plot_df.dropna(subset=['Easting', 'Northing', 'TMI', 'Sheet_Name']).copy()
+                    if len(crossover_input) > 0:
+                        coords = crossover_input[['Easting', 'Northing']].values
+                        tree = cKDTree(coords)
+                        pairs = tree.query_pairs(r=distance_thresh)
+                        crossovers = []
+                        for i, j in pairs:
+                            line_i = crossover_input.iloc[i].get('Line_Name', '')
+                            line_j = crossover_input.iloc[j].get('Line_Name', '')
+                            sheet_i = crossover_input.iloc[i]['Sheet_Name']
+                            sheet_j = crossover_input.iloc[j]['Sheet_Name']
+                            # Jika sama sheet dan sama line name (dan line name tidak kosong), bukan crossover
+                            if (sheet_i == sheet_j) and (line_i == line_j) and line_i != '':
+                                continue
+                            diff = crossover_input.iloc[i]['TMI'] - crossover_input.iloc[j]['TMI']
+                            crossovers.append({
+                                'idx_i': i, 'idx_j': j,
+                                'easting_i': crossover_input.iloc[i]['Easting'],
+                                'northing_i': crossover_input.iloc[i]['Northing'],
+                                'easting_j': crossover_input.iloc[j]['Easting'],
+                                'northing_j': crossover_input.iloc[j]['Northing'],
+                                'tmi_i': crossover_input.iloc[i]['TMI'],
+                                'tmi_j': crossover_input.iloc[j]['TMI'],
+                                'diff': diff,
+                                'sheet_i': sheet_i, 'sheet_j': sheet_j,
+                                'line_i': line_i, 'line_j': line_j
+                            })
+                        if crossovers:
+                            st.success(f"Ditemukan {len(crossovers)} pasangan crossover dalam radius {distance_thresh} m.")
+                            crossover_table = pd.DataFrame(crossovers)
+                            st.dataframe(crossover_table)
+                            # Kumpulkan semua titik yang terlibat
+                            crossover_indices = set()
+                            for c in crossovers:
+                                crossover_indices.add(c['idx_i'])
+                                crossover_indices.add(c['idx_j'])
+                            crossover_points = crossover_input.iloc[list(crossover_indices)].copy()
+                            # Plot ulang peta dengan tanda merah
+                            st.subheader("Peta Anomali dengan Tanda Crossover (Merah)")
+                            fig_cross, ax_cross = plt.subplots(figsize=(10, 8))
+                            sc = ax_cross.scatter(crossover_input['Longitude'], crossover_input['Latitude'],
+                                                  c=crossover_input['TMI'], s=10, cmap='viridis',
+                                                  norm=Normalize(vmin=crossover_input['TMI'].min(), vmax=crossover_input['TMI'].max()))
+                            plt.colorbar(sc, ax=ax_cross, label='TMI (nT)')
+                            ax_cross.scatter(crossover_points['Longitude'], crossover_points['Latitude'],
+                                             c='red', s=20, marker='o', edgecolors='black', linewidths=0.5, label='Crossover points')
+                            ax_cross.set_xlabel('Longitude')
+                            ax_cross.set_ylabel('Latitude')
+                            ax_cross.set_title('TMI dengan titik crossover (merah)')
+                            ax_cross.legend()
+                            ax_cross.grid(True, linestyle=':', alpha=0.5)
+                            st.pyplot(fig_cross)
+                            plt.close(fig_cross)
+                        else:
+                            st.info("Tidak ditemukan crossover dalam radius tersebut.")
+                    else:
+                        st.warning("Tidak cukup data untuk deteksi crossover.")
                 else:
-                    st.info(f"Tidak ditemukan titik crossover dengan jarak ≤ {crossover_distance} meter.")
+                    st.warning("Kolom Easting atau Northing tidak ditemukan. Deteksi crossover membutuhkan koordinat proyeksi (meter).")
+            else:
+                st.info("Centang kotak untuk mendeteksi crossover.")
             
             # Profil jarak
             st.header("📏 Profil Anomali Sepanjang Jarak")
             for sheet in selected_sheets:
-                anomaly_df = plot_df[plot_df['Sheet_Name'] == sheet].dropna(subset=[anomaly_type, 'Latitude', 'Longitude']).sort_values('datetime')
-                if len(anomaly_df) > 1:
-                    dist = compute_distance_along_line(anomaly_df)
+                prof_df = plot_df[plot_df['Sheet_Name'] == sheet].dropna(subset=[anomaly_type, 'Latitude', 'Longitude']).sort_values('datetime')
+                if len(prof_df) > 1:
+                    dist = compute_distance_along_line(prof_df)
                     fig_prof, ax_prof = plt.subplots(figsize=(10, 4))
-                    ax_prof.plot(dist/1000, anomaly_df[anomaly_type], 'b-', linewidth=1, marker='.', markersize=2)
+                    ax_prof.plot(dist/1000, prof_df[anomaly_type], 'b-', linewidth=1, marker='.', markersize=2)
                     ax_prof.set_xlabel('Jarak (km)')
                     ax_prof.set_ylabel(f'{anomaly_type} (nT)')
                     ax_prof.set_title(f'Sheet {sheet}')
-                    ax_prof.grid(True)
+                    ax_prof.grid(True, linestyle=':', alpha=0.5)
                     st.pyplot(fig_prof)
                     plt.close(fig_prof)
                 else:
                     st.info(f"Sheet {sheet}: Tidak cukup titik untuk profil.")
             
-            # Download
-            st.header("💾 Download Data Hasil")
-            output_cols = ['Sheet_Name', 'datetime', 'Latitude', 'Longitude', 'Easting', 'Northing',
-                           'Field', 'Field_filtered', 'Altitude', 'Altitude_filtered',
-                           'Depth', 'Line_Name', 'IGRF', 'Diurnal_Correction', 'TMI']
-            output_cols = [c for c in output_cols if c in final_df.columns]
-            output_df = final_df[output_cols]
+            # Download data
+            st.header("💾 Download Data Hasil (gabungan semua sheet)")
+            out_cols = ['Sheet_Name', 'datetime', 'Latitude', 'Longitude', 'Easting', 'Northing',
+                        'Field', 'Field_filtered', 'Altitude', 'Altitude_filtered',
+                        'Depth', 'Line_Name', 'IGRF', 'Diurnal_Correction', 'TMI']
+            out_cols = [c for c in out_cols if c in final_df.columns]
+            output_df = final_df[out_cols]
             csv = output_df.to_csv(index=False).encode('utf-8')
             st.download_button("📥 Download CSV", csv, "marine_magnetic_all_sheets.csv", "text/csv")
 else:
-    st.info("⬅️ Upload file Excel (multi‑sheet) atau CSV.")
+    st.info("⬅️ Upload file Excel (bisa multi‑sheet) atau CSV.")
