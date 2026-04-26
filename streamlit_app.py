@@ -8,6 +8,7 @@ from scipy.signal import savgol_filter, butter, filtfilt
 from scipy.interpolate import CubicSpline
 from scipy.stats import median_abs_deviation
 from math import radians, sin, cos, sqrt, atan2
+import io
 
 # ================== UTILITY FUNCTIONS ==================
 
@@ -18,23 +19,35 @@ def clean_numeric_columns(df, columns):
     return df
 
 def load_data(uploaded_file):
+    """Load Excel (all sheets) or CSV (single). Returns dict of DataFrames."""
     if uploaded_file.name.endswith('.xlsx'):
-        df = pd.read_excel(uploaded_file)
+        xl = pd.ExcelFile(uploaded_file)
+        sheet_names = xl.sheet_names
+        sheets = {}
+        for sheet in sheet_names:
+            df = pd.read_excel(uploaded_file, sheet_name=sheet)
+            numeric_cols = ['Latitude', 'Longitude', 'Easting', 'Northing', 'Field', 
+                            'Altitude', 'Depth', 'Fbase']
+            df = clean_numeric_columns(df, numeric_cols)
+            sheets[sheet] = df
+        return sheets
     else:
+        # CSV single sheet
         df = pd.read_csv(uploaded_file)
-    numeric_cols = ['Latitude', 'Longitude', 'Easting', 'Northing', 'Field', 
-                    'Altitude', 'Depth', 'Fbase']
-    df = clean_numeric_columns(df, numeric_cols)
-    return df
+        numeric_cols = ['Latitude', 'Longitude', 'Easting', 'Northing', 'Field', 
+                        'Altitude', 'Depth', 'Fbase']
+        df = clean_numeric_columns(df, numeric_cols)
+        return {'data': df}
 
-def parse_datetime(df):
+def parse_datetime(df, sheet_name):
+    """Gabungkan Reading_Date dan Reading_Time menjadi kolom datetime (UTC)."""
     try:
         df['datetime'] = pd.to_datetime(df['Reading_Date'].astype(str) + ' ' + df['Reading_Time'].astype(str), utc=True)
     except Exception as e:
-        raise ValueError(f"Gagal parse datetime: {e}")
+        raise ValueError(f"Sheet '{sheet_name}': gagal parse datetime - {e}")
     return df
 
-def separate_base_and_survey(df):
+def separate_base_and_survey(df, sheet_name):
     survey_df = df[df['Field'].notna()].copy()
     base_df = df[df['Tbase'].notna() & df['Fbase'].notna()].copy()
     if not base_df.empty:
@@ -46,7 +59,7 @@ def separate_base_and_survey(df):
                 base_df['base_datetime'] = pd.to_datetime(ref_date.strftime('%Y-%m-%d') + ' ' + base_df['Tbase'].astype(str), utc=True, errors='coerce')
             else:
                 base_df['base_datetime'] = pd.to_datetime('1970-01-01 ' + base_df['Tbase'].astype(str), utc=True, errors='coerce')
-            st.warning("Kolom Reading_Date tidak ditemukan untuk data base. Menggunakan tanggal survei pertama.")
+            st.warning(f"Sheet '{sheet_name}': Kolom Reading_Date tidak ditemukan untuk data base. Menggunakan tanggal survei pertama.")
         base_df = base_df.dropna(subset=['base_datetime'])
     return survey_df, base_df
 
@@ -144,30 +157,18 @@ def compute_distance_along_line(df):
 
 # ================== MAIN STREAMLIT APP ==================
 
-st.set_page_config(page_title="Marine Magnetic Processing", layout="wide")
-st.title("🌊 Pengolahan Data Magnetik Kelautan")
+st.set_page_config(page_title="Marine Magnetic Processing (Multi‑Sheet)", layout="wide")
+st.title("🌊 Pengolahan Data Magnetik Kelautan – Multi Sheet")
 
-uploaded_file = st.sidebar.file_uploader("📂 Upload file Excel/CSV", type=['xlsx', 'csv'])
+uploaded_file = st.sidebar.file_uploader("📂 Upload file Excel (multi‑sheet) atau CSV", type=['xlsx', 'csv'])
 
 if uploaded_file is not None:
-    df_raw = load_data(uploaded_file)
-    st.subheader("📋 Data Awal (10 baris pertama)")
-    st.dataframe(df_raw.head(10))
-
-    try:
-        df_raw = parse_datetime(df_raw)
-    except Exception as e:
-        st.error(f"❌ Gagal parse datetime: {e}")
-        st.stop()
-
-    survey_df, base_df = separate_base_and_survey(df_raw)
-    if survey_df.empty:
-        st.error("❌ Tidak ada data survei (kolom Field kosong)")
-        st.stop()
-    if base_df.empty:
-        st.warning("⚠️ Tidak ada data base (Tbase/Fbase). Koreksi diurnal tidak dilakukan.")
-
-    st.sidebar.header("🔧 Parameter Filtering")
+    # Load all sheets
+    all_sheets = load_data(uploaded_file)
+    sheet_names = list(all_sheets.keys())
+    st.subheader(f"📑 Sheet yang terdeteksi: {', '.join(sheet_names)}")
+    
+    st.sidebar.header("🔧 Parameter Filtering (diterapkan ke semua sheet)")
     
     # Filter Field
     field_method = st.sidebar.selectbox("Filter Field", ["None", "Hampel (despiking)", "Moving Average", "Savitzky-Golay", "Butterworth Lowpass"])
@@ -189,8 +190,8 @@ if uploaded_file is not None:
     elif alt_method in ["Moving Average", "Savitzky-Golay"]:
         alt_params['window'] = st.sidebar.slider("Window size Alt", 3, 51, 11, 2)
 
-    # Manual IGRF
-    st.sidebar.header("🧲 IGRF Source (Manual)")
+    # Manual IGRF (global untuk semua sheet)
+    st.sidebar.header("🧲 IGRF Source (Manual, berlaku untuk semua sheet)")
     igrf_option = st.sidebar.radio(
         "Pilih cara input IGRF:",
         ["Constant value", "Upload IGRF file (CSV)", "Skip IGRF (set to 0)"]
@@ -204,11 +205,27 @@ if uploaded_file is not None:
         if igrf_file:
             st.sidebar.success("File IGRF terupload.")
 
-    # Pilihan untuk peta anomali: menggunakan Field_filtered atau TMI
     anomaly_type = st.sidebar.selectbox("Peta Anomali menggunakan:", ["Field_filtered", "TMI"])
 
-    if st.button("🚀 Proses Filter & Koreksi"):
-        with st.spinner("Memproses data..."):
+    if st.button("🚀 Proses Semua Sheet"):
+        all_results = []  # akan menampung DataFrame hasil per sheet
+        progress_bar = st.progress(0)
+        for idx, sheet in enumerate(sheet_names):
+            st.write(f"⏳ Memproses sheet: **{sheet}**")
+            df_raw = all_sheets[sheet].copy()
+            
+            # Parse datetime
+            try:
+                df_raw = parse_datetime(df_raw, sheet)
+            except Exception as e:
+                st.error(f"Sheet {sheet}: {e}")
+                continue
+            
+            survey_df, base_df = separate_base_and_survey(df_raw, sheet)
+            if survey_df.empty:
+                st.warning(f"Sheet {sheet}: Tidak ada data survei (Field kosong). Dilewati.")
+                continue
+            
             # Filter Field
             if field_method != "None":
                 survey_df['Field_filtered'] = apply_filter(survey_df['Field'], field_method, **field_params)
@@ -221,18 +238,20 @@ if uploaded_file is not None:
             else:
                 survey_df['Altitude_filtered'] = survey_df['Altitude']
             
-            # Koreksi diurnal
+            # Koreksi diurnal (menggunakan base_df dari sheet ini)
             if not base_df.empty:
-                ref_method = st.selectbox("Metode referensi base", ['first', 'mean', 'none'], key='ref_method')
-                diurnal_corr = compute_diurnal_correction(survey_df, base_df, reference_method=ref_method if ref_method != 'none' else 'constant')
+                # Untuk multi-sheet, pilih metode referensi base per sheet? Bisa pakai 'first' default.
+                diurnal_corr = compute_diurnal_correction(survey_df, base_df, reference_method='first')
                 survey_df['Diurnal_Correction'] = diurnal_corr
             else:
                 survey_df['Diurnal_Correction'] = 0.0
-
-            # IGRF Manual
+                st.info(f"Sheet {sheet}: Tidak ada data base -> koreksi diurnal = 0")
+            
+            # IGRF Manual (global)
             if igrf_option == "Constant value":
                 survey_df['IGRF'] = constant_igrf
             elif igrf_option == "Upload IGRF file (CSV)" and igrf_file is not None:
+                # Baca file IGRF global
                 igrf_df = pd.read_csv(igrf_file)
                 if 'datetime' in igrf_df.columns:
                     igrf_df['datetime'] = pd.to_datetime(igrf_df['datetime'], utc=True)
@@ -241,119 +260,163 @@ if uploaded_file is not None:
                     if len(igrf_df) == len(survey_df):
                         survey_df['IGRF'] = igrf_df['IGRF'].values
                     else:
-                        st.error("Panjang file IGRF tidak sama dengan data survei.")
-                        survey_df['IGRF'] = np.nan
+                        st.error(f"Sheet {sheet}: Panjang file IGRF tidak sama dengan data survei. IGRF diisi 0.")
+                        survey_df['IGRF'] = 0.0
             else:
                 survey_df['IGRF'] = 0.0
-
+            
             survey_df['IGRF'] = survey_df['IGRF'].fillna(0.0)
             survey_df['TMI'] = survey_df['Field_filtered'] - survey_df['IGRF'] - survey_df['Diurnal_Correction']
             
-            st.session_state['survey_df'] = survey_df
-            st.success("✅ Proses selesai!")
-
-    if 'survey_df' in st.session_state:
-        survey_df = st.session_state['survey_df']
+            # Tambahkan kolom sheet name
+            survey_df['Sheet_Name'] = sheet
+            
+            all_results.append(survey_df)
+            progress_bar.progress((idx+1)/len(sheet_names))
         
-        st.subheader("📊 Hasil setelah koreksi (10 baris pertama)")
-        st.dataframe(survey_df[['datetime', 'Field', 'Field_filtered', 'IGRF', 'Diurnal_Correction', 'TMI']].head(10))
-
-        # ========== 1. PLOT PERBANDINGAN FIELD SEBELUM & SESUDAH FILTER ==========
-        st.header("📈 Perbandingan Field Original vs Filtered")
-        fig_field, ax_field = plt.subplots(figsize=(12, 4))
-        ax_field.plot(survey_df['Field'].values, 'gray', label='Field Original', linewidth=1)
-        ax_field.plot(survey_df['Field_filtered'].values, 'r', label='Field Filtered', linewidth=1)
-        ax_field.set_xlabel('Index')
-        ax_field.set_ylabel('nT')
-        ax_field.set_title('Field Sebelum dan Sesudah Filter')
-        ax_field.legend()
-        st.pyplot(fig_field)
-        plt.close(fig_field)
-
-        # ========== 2. PLOT TMI ==========
-        st.subheader("📉 Total Magnetic Intensity (TMI) setelah koreksi")
-        fig_tmi, ax_tmi = plt.subplots(figsize=(12, 4))
-        ax_tmi.plot(survey_df['TMI'].values, 'b', label='TMI', linewidth=1)
-        ax_tmi.set_xlabel('Index')
-        ax_tmi.set_ylabel('nT')
-        ax_tmi.set_title('TMI')
-        st.pyplot(fig_tmi)
-        plt.close(fig_tmi)
-
-        # ========== 3. PETA LINTASAN HITAM (Matplotlib) ==========
-        st.header("🗺️ Peta Lintasan Survei (Garis Hitam) dengan Titik Awal & Akhir")
-        plot_df = survey_df.dropna(subset=['Latitude', 'Longitude']).copy()
+        if all_results:
+            final_df = pd.concat(all_results, ignore_index=True)
+            st.session_state['final_df'] = final_df
+            st.success(f"✅ Selesai! Total {len(final_df)} titik dari {len(all_results)} sheet.")
+        else:
+            st.error("Tidak ada data yang berhasil diproses.")
+    
+    if 'final_df' in st.session_state:
+        final_df = st.session_state['final_df']
+        sheets_present = final_df['Sheet_Name'].unique()
+        
+        st.subheader("📊 Hasil gabungan (10 baris pertama)")
+        st.dataframe(final_df[['Sheet_Name', 'datetime', 'Field', 'Field_filtered', 'IGRF', 'Diurnal_Correction', 'TMI']].head(10))
+        
+        # Pilih sheet untuk ditampilkan (atau semua)
+        selected_sheets = st.multiselect("Pilih sheet untuk ditampilkan di plot", sheets_present, default=sheets_present)
+        plot_df = final_df[final_df['Sheet_Name'].isin(selected_sheets)].copy()
+        
         if not plot_df.empty:
-            plot_df = plot_df.sort_values('datetime')
+            # ========== 1. PLOT PERBANDINGAN FIELD sebelum/sesudah filter ==========
+            st.header("📈 Perbandingan Field Original vs Filtered (per sheet atau gabungan)")
+            fig_field, ax_field = plt.subplots(figsize=(12, 5))
+            for sheet in selected_sheets:
+                df_sheet = plot_df[plot_df['Sheet_Name'] == sheet].sort_values('datetime')
+                ax_field.plot(df_sheet['Field'].values, '--', alpha=0.5, label=f'{sheet} Original')
+                ax_field.plot(df_sheet['Field_filtered'].values, '-', alpha=0.8, label=f'{sheet} Filtered')
+            ax_field.set_xlabel('Index (urut waktu per sheet)')
+            ax_field.set_ylabel('nT')
+            ax_field.set_title('Field Original vs Filtered')
+            ax_field.legend(loc='best', fontsize=8, ncol=2)
+            ax_field.grid(True, linestyle=':', alpha=0.5)
+            st.pyplot(fig_field)
+            plt.close(fig_field)
+            
+            # ========== 2. PLOT TMI ==========
+            st.header("📉 Total Magnetic Intensity (TMI) setelah koreksi")
+            fig_tmi, ax_tmi = plt.subplots(figsize=(12, 5))
+            for sheet in selected_sheets:
+                df_sheet = plot_df[plot_df['Sheet_Name'] == sheet].sort_values('datetime')
+                ax_tmi.plot(df_sheet['TMI'].values, label=sheet)
+            ax_tmi.set_xlabel('Index (urut waktu per sheet)')
+            ax_tmi.set_ylabel('nT')
+            ax_tmi.set_title('TMI')
+            ax_tmi.legend()
+            ax_tmi.grid(True, linestyle=':', alpha=0.5)
+            st.pyplot(fig_tmi)
+            plt.close(fig_tmi)
+            
+            # ========== 3. PETA LINTASAN HITAM (Matplotlib) ==========
+            st.header("🗺️ Peta Lintasan Survei (Garis Hitam) dengan Titik Awal & Akhir per Sheet")
+            # Buat satu figure, warna garis berbeda per sheet
             fig_track, ax_track = plt.subplots(figsize=(10, 8))
-            # Plot garis hitam
-            ax_track.plot(plot_df['Longitude'], plot_df['Latitude'], 'k-', linewidth=1.5, label='Lintasan')
-            # Titik awal hijau
-            first = plot_df.iloc[0]
-            ax_track.plot(first['Longitude'], first['Latitude'], 'go', markersize=8, label=f'Start: {first["datetime"].strftime("%Y-%m-%d %H:%M:%S")}')
-            # Titik akhir merah
-            last = plot_df.iloc[-1]
-            ax_track.plot(last['Longitude'], last['Latitude'], 'ro', markersize=8, label=f'End: {last["datetime"].strftime("%Y-%m-%d %H:%M:%S")}')
+            for sheet in selected_sheets:
+                df_sheet = plot_df[plot_df['Sheet_Name'] == sheet].dropna(subset=['Latitude', 'Longitude']).sort_values('datetime')
+                if not df_sheet.empty:
+                    # Garis lintasan
+                    ax_track.plot(df_sheet['Longitude'], df_sheet['Latitude'], linewidth=1.5, label=sheet)
+                    # Titik awal (hijau) dan akhir (merah) untuk setiap sheet
+                    first = df_sheet.iloc[0]
+                    last = df_sheet.iloc[-1]
+                    ax_track.plot(first['Longitude'], first['Latitude'], 'go', markersize=6)
+                    ax_track.plot(last['Longitude'], last['Latitude'], 'ro', markersize=6)
+                    # Anotasi waktu (optional)
+                    ax_track.annotate(f"{sheet}\nStart: {first['datetime'].strftime('%H:%M:%S')}", 
+                                      (first['Longitude'], first['Latitude']), textcoords="offset points", xytext=(5,5), fontsize=7)
+                    ax_track.annotate(f"End: {last['datetime'].strftime('%H:%M:%S')}", 
+                                      (last['Longitude'], last['Latitude']), textcoords="offset points", xytext=(5,-10), fontsize=7)
             ax_track.set_xlabel('Longitude')
             ax_track.set_ylabel('Latitude')
-            ax_track.set_title('Lintasan Survei')
+            ax_track.set_title('Lintasan Survei (warna berbeda per sheet)')
             ax_track.legend(loc='best')
             ax_track.grid(True, linestyle=':', alpha=0.5)
             st.pyplot(fig_track)
             plt.close(fig_track)
-        else:
-            st.warning("Tidak ada koordinat valid untuk peta lintasan.")
-
-        # ========== 4. PETA ANOMALI MAGNET (Scatter warna dengan Matplotlib) ==========
-        st.header(f"🗺️ Peta Anomali Magnet ({anomaly_type})")
-        anomaly_df = plot_df.dropna(subset=[anomaly_type, 'Latitude', 'Longitude']).copy()
-        if not anomaly_df.empty:
-            fig_anom, ax_anom = plt.subplots(figsize=(10, 8))
-            # Buat normalize dan colormap
-            vmin = anomaly_df[anomaly_type].min()
-            vmax = anomaly_df[anomaly_type].max()
-            norm = Normalize(vmin=vmin, vmax=vmax)
-            cmap = plt.cm.viridis
-            sc = ax_anom.scatter(anomaly_df['Longitude'], anomaly_df['Latitude'], 
-                                 c=anomaly_df[anomaly_type], s=10, cmap=cmap, norm=norm)
-            cbar = plt.colorbar(sc, ax=ax_anom, label=f'{anomaly_type} (nT)')
-            ax_anom.set_xlabel('Longitude')
-            ax_anom.set_ylabel('Latitude')
-            ax_anom.set_title(f'Distribusi {anomaly_type}')
-            ax_anom.grid(True, linestyle=':', alpha=0.5)
-            st.pyplot(fig_anom)
-            plt.close(fig_anom)
-        else:
-            st.warning(f"Tidak ada data valid untuk {anomaly_type} setelah filter koordinat.")
-
-        # ========== 5. PROFIL ANOMALI SEPANJANG JARAK ==========
-        st.header("📏 Profil Anomali Sepanjang Jarak")
-        if not anomaly_df.empty:
-            anomaly_df_sorted = anomaly_df.sort_values('datetime')
-            if len(anomaly_df_sorted) > 1:
-                dist = compute_distance_along_line(anomaly_df_sorted)
-                fig_profile, ax_profile = plt.subplots(figsize=(12, 5))
-                ax_profile.plot(dist/1000, anomaly_df_sorted[anomaly_type], 'b-', linewidth=1, marker='.', markersize=2)
-                ax_profile.set_xlabel('Jarak (km)')
-                ax_profile.set_ylabel(f'{anomaly_type} (nT)')
-                ax_profile.set_title('Profil Anomali')
-                ax_profile.grid(True, linestyle=':', alpha=0.5)
-                st.pyplot(fig_profile)
-                plt.close(fig_profile)
+            
+            # ========== 4. PETA ANOMALI MAGNET (Scatter warna per sheet, atau satu plot?) ==========
+            st.header(f"🗺️ Peta Anomali Magnet ({anomaly_type})")
+            # Pilih apakah akan memisahkan per sheet atau digabung
+            combine_anom = st.checkbox("Gabungkan semua sheet dalam satu plot", value=True)
+            if combine_anom:
+                fig_anom, ax_anom = plt.subplots(figsize=(10, 8))
+                anomaly_df = plot_df.dropna(subset=[anomaly_type, 'Latitude', 'Longitude'])
+                if not anomaly_df.empty:
+                    vmin = anomaly_df[anomaly_type].min()
+                    vmax = anomaly_df[anomaly_type].max()
+                    norm = Normalize(vmin=vmin, vmax=vmax)
+                    cmap = plt.cm.viridis
+                    sc = ax_anom.scatter(anomaly_df['Longitude'], anomaly_df['Latitude'],
+                                         c=anomaly_df[anomaly_type], s=10, cmap=cmap, norm=norm)
+                    plt.colorbar(sc, ax=ax_anom, label=f'{anomaly_type} (nT)')
+                    ax_anom.set_xlabel('Longitude')
+                    ax_anom.set_ylabel('Latitude')
+                    ax_anom.set_title(f'Distribusi {anomaly_type} (semua sheet)')
+                    ax_anom.grid(True, linestyle=':', alpha=0.5)
+                    st.pyplot(fig_anom)
+                else:
+                    st.warning("Tidak ada data anomali valid.")
+                plt.close(fig_anom)
             else:
-                st.info("Tidak cukup titik untuk membuat profil jarak.")
-        else:
-            st.info("Tidak ada data anomali untuk profil jarak.")
-
-        # ========== 6. DOWNLOAD DATA ==========
-        st.header("💾 Download Data Hasil")
-        output_cols = ['datetime', 'Latitude', 'Longitude', 'Easting', 'Northing',
-                       'Field', 'Field_filtered', 'Altitude', 'Altitude_filtered',
-                       'Depth', 'Line_Name', 'IGRF', 'Diurnal_Correction', 'TMI']
-        output_cols = [c for c in output_cols if c in survey_df.columns]
-        output_df = survey_df[output_cols]
-        csv = output_df.to_csv(index=False).encode('utf-8')
-        st.download_button("📥 Download CSV", csv, "marine_magnetic_processed.csv", "text/csv")
-
+                # Plot per sheet
+                for sheet in selected_sheets:
+                    anomaly_df = plot_df[plot_df['Sheet_Name'] == sheet].dropna(subset=[anomaly_type, 'Latitude', 'Longitude'])
+                    if not anomaly_df.empty:
+                        fig_anom, ax_anom = plt.subplots(figsize=(8, 6))
+                        vmin = anomaly_df[anomaly_type].min()
+                        vmax = anomaly_df[anomaly_type].max()
+                        norm = Normalize(vmin=vmin, vmax=vmax)
+                        cmap = plt.cm.viridis
+                        sc = ax_anom.scatter(anomaly_df['Longitude'], anomaly_df['Latitude'],
+                                             c=anomaly_df[anomaly_type], s=10, cmap=cmap, norm=norm)
+                        plt.colorbar(sc, ax=ax_anom, label=f'{anomaly_type} (nT)')
+                        ax_anom.set_xlabel('Longitude')
+                        ax_anom.set_ylabel('Latitude')
+                        ax_anom.set_title(f'{sheet} - {anomaly_type}')
+                        ax_anom.grid(True, linestyle=':', alpha=0.5)
+                        st.pyplot(fig_anom)
+                        plt.close(fig_anom)
+            
+            # ========== 5. PROFIL ANOMALI SEPANJANG JARAK (per sheet) ==========
+            st.header("📏 Profil Anomali Sepanjang Jarak")
+            for sheet in selected_sheets:
+                anomaly_df = plot_df[plot_df['Sheet_Name'] == sheet].dropna(subset=[anomaly_type, 'Latitude', 'Longitude']).sort_values('datetime')
+                if len(anomaly_df) > 1:
+                    dist = compute_distance_along_line(anomaly_df)
+                    fig_prof, ax_prof = plt.subplots(figsize=(10, 4))
+                    ax_prof.plot(dist/1000, anomaly_df[anomaly_type], 'b-', linewidth=1, marker='.', markersize=2)
+                    ax_prof.set_xlabel('Jarak (km)')
+                    ax_prof.set_ylabel(f'{anomaly_type} (nT)')
+                    ax_prof.set_title(f'Sheet {sheet}')
+                    ax_prof.grid(True, linestyle=':', alpha=0.5)
+                    st.pyplot(fig_prof)
+                    plt.close(fig_prof)
+                else:
+                    st.info(f"Sheet {sheet}: Tidak cukup titik untuk profil.")
+            
+            # ========== 6. DOWNLOAD DATA ==========
+            st.header("💾 Download Data Hasil (gabungan semua sheet)")
+            output_cols = ['Sheet_Name', 'datetime', 'Latitude', 'Longitude', 'Easting', 'Northing',
+                           'Field', 'Field_filtered', 'Altitude', 'Altitude_filtered',
+                           'Depth', 'Line_Name', 'IGRF', 'Diurnal_Correction', 'TMI']
+            output_cols = [c for c in output_cols if c in final_df.columns]
+            output_df = final_df[output_cols]
+            csv = output_df.to_csv(index=False).encode('utf-8')
+            st.download_button("📥 Download CSV", csv, "marine_magnetic_all_sheets.csv", "text/csv")
 else:
-    st.info("⬅️ Silakan upload file Excel/CSV dengan kolom yang diperlukan.")
+    st.info("⬅️ Upload file Excel (bisa multi‑sheet) atau CSV.")
