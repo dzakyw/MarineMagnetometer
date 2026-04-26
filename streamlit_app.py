@@ -10,9 +10,18 @@ from math import radians, sin, cos, sqrt, atan2
 
 # ================== UTILITY FUNCTIONS ==================
 
-def clean_numeric_columns(df, columns):
+def clean_string_placeholders(df, columns):
+    """Ganti string 'nan', 'NaN', '*', '' dengan np.nan pada kolom yang ditentukan."""
     for col in columns:
         if col in df.columns:
+            df[col] = df[col].astype(str).replace(['nan', 'NaN', '*', ''], np.nan)
+    return df
+
+def clean_numeric_columns(df, columns):
+    """Bersihkan placeholder dan konversi ke numerik, yang tidak bisa jadi NaN."""
+    for col in columns:
+        if col in df.columns:
+            df[col] = df[col].astype(str).replace(['nan', 'NaN', '*', ''], np.nan)
             df[col] = pd.to_numeric(df[col], errors='coerce')
     return df
 
@@ -24,58 +33,75 @@ def load_data(uploaded_file):
         sheets = {}
         for sheet in sheet_names:
             df = pd.read_excel(uploaded_file, sheet_name=sheet)
-            numeric_cols = ['Latitude', 'Longitude', 'Easting', 'Northing', 'Field', 
-                            'Altitude', 'Depth', 'Fbase']
+            # Bersihkan placeholder di semua kolom potensial
+            all_cols = ['Reading_Date', 'Reading_Time', 'Latitude', 'Longitude', 'Easting', 'Northing',
+                        'Field', 'Altitude', 'Depth', 'Fbase', 'Tbase']
+            df = clean_string_placeholders(df, all_cols)
+            numeric_cols = ['Latitude', 'Longitude', 'Easting', 'Northing', 'Field', 'Altitude', 'Depth', 'Fbase']
             df = clean_numeric_columns(df, numeric_cols)
             sheets[sheet] = df
         return sheets
     else:
         # CSV single sheet
         df = pd.read_csv(uploaded_file)
-        numeric_cols = ['Latitude', 'Longitude', 'Easting', 'Northing', 'Field', 
-                        'Altitude', 'Depth', 'Fbase']
+        all_cols = ['Reading_Date', 'Reading_Time', 'Latitude', 'Longitude', 'Easting', 'Northing',
+                    'Field', 'Altitude', 'Depth', 'Fbase', 'Tbase']
+        df = clean_string_placeholders(df, all_cols)
+        numeric_cols = ['Latitude', 'Longitude', 'Easting', 'Northing', 'Field', 'Altitude', 'Depth', 'Fbase']
         df = clean_numeric_columns(df, numeric_cols)
         return {'data': df}
 
 def parse_datetime(df, sheet_name):
-    """Gabungkan Reading_Date dan Reading_Time menjadi kolom datetime (UTC).
-       Menangani waktu dengan atau tanpa pecahan detik."""
-    datetime_str = df['Reading_Date'].astype(str) + ' ' + df['Reading_Time'].astype(str)
+    """Gabungkan Reading_Date dan Reading_Time menjadi datetime, hapus baris tidak valid."""
+    # Pastikan kolom date/time tidak mengandung placeholder (sudah diubah jadi NaN)
+    df_clean = df.dropna(subset=['Reading_Date', 'Reading_Time']).copy()
+    if len(df_clean) == 0:
+        raise ValueError(f"Sheet '{sheet_name}': Tidak ada baris dengan Reading_Date dan Reading_Time yang valid.")
+    
+    datetime_str = df_clean['Reading_Date'].astype(str) + ' ' + df_clean['Reading_Time'].astype(str)
+    
+    # Coba berbagai format
     try:
-        # Pertama coba dengan format umum (tanpa microseconds)
-        df['datetime'] = pd.to_datetime(datetime_str, utc=True, format='%Y-%m-%d %H:%M:%S', errors='raise')
+        dt = pd.to_datetime(datetime_str, utc=True, format='%Y-%m-%d %H:%M:%S', errors='raise')
     except (ValueError, TypeError):
         try:
-            # Jika gagal, coba dengan format yang menyertakan microseconds
-            df['datetime'] = pd.to_datetime(datetime_str, utc=True, format='%Y-%m-%d %H:%M:%S.%f', errors='raise')
+            dt = pd.to_datetime(datetime_str, utc=True, format='%Y-%m-%d %H:%M:%S.%f', errors='raise')
         except (ValueError, TypeError):
             try:
-                # Coba dengan format mixed (pandas >= 2.0)
-                df['datetime'] = pd.to_datetime(datetime_str, utc=True, format='mixed')
+                dt = pd.to_datetime(datetime_str, utc=True, format='mixed')
             except (ValueError, TypeError):
-                # Terakhir, biarkan pandas menebak (coerce error jadi NaT)
-                df['datetime'] = pd.to_datetime(datetime_str, utc=True, errors='coerce')
-    # Periksa apakah ada nilai NaT
-    if df['datetime'].isna().any():
-        n_invalid = df['datetime'].isna().sum()
-        example = datetime_str.iloc[df['datetime'].isna().idxmax()]
+                dt = pd.to_datetime(datetime_str, utc=True, errors='coerce')
+    
+    valid_mask = dt.notna()
+    if not valid_mask.all():
+        n_invalid = (~valid_mask).sum()
+        example = datetime_str[~valid_mask].iloc[0] if n_invalid > 0 else ''
         raise ValueError(f"Sheet '{sheet_name}': {n_invalid} baris tidak dapat di-parse. Contoh gagal: '{example}'")
-    return df
+    
+    df_clean['datetime'] = dt
+    return df_clean
 
 def separate_base_and_survey(df, sheet_name):
+    """Pisahkan data survei dan base. Base menggunakan Tbase/Fbase dari sheet yang sama."""
     survey_df = df[df['Field'].notna()].copy()
     base_df = df[df['Tbase'].notna() & df['Fbase'].notna()].copy()
+    
     if not base_df.empty:
+        # Konstruksi datetime untuk base
         if 'Reading_Date' in base_df.columns:
-            base_df['base_datetime'] = pd.to_datetime(base_df['Reading_Date'].astype(str) + ' ' + base_df['Tbase'].astype(str), utc=True, errors='coerce')
+            base_df['base_datetime'] = pd.to_datetime(base_df['Reading_Date'].astype(str) + ' ' + base_df['Tbase'].astype(str),
+                                                      utc=True, errors='coerce')
         else:
             if not survey_df.empty:
                 ref_date = survey_df['datetime'].min().date()
-                base_df['base_datetime'] = pd.to_datetime(ref_date.strftime('%Y-%m-%d') + ' ' + base_df['Tbase'].astype(str), utc=True, errors='coerce')
+                base_df['base_datetime'] = pd.to_datetime(ref_date.strftime('%Y-%m-%d') + ' ' + base_df['Tbase'].astype(str),
+                                                          utc=True, errors='coerce')
             else:
-                base_df['base_datetime'] = pd.to_datetime('1970-01-01 ' + base_df['Tbase'].astype(str), utc=True, errors='coerce')
+                base_df['base_datetime'] = pd.to_datetime('1970-01-01 ' + base_df['Tbase'].astype(str),
+                                                          utc=True, errors='coerce')
             st.warning(f"Sheet '{sheet_name}': Kolom Reading_Date tidak ditemukan untuk data base. Menggunakan tanggal survei pertama.")
         base_df = base_df.dropna(subset=['base_datetime'])
+    
     return survey_df, base_df
 
 def hampel_filter(series, window_size=5, n_sigmas=3.0):
@@ -178,7 +204,7 @@ st.title("🌊 Pengolahan Data Magnetik Kelautan – Multi Sheet")
 uploaded_file = st.sidebar.file_uploader("📂 Upload file Excel (multi‑sheet) atau CSV", type=['xlsx', 'csv'])
 
 if uploaded_file is not None:
-    # Load all sheets
+    # Load all sheets (sudah dibersihkan)
     all_sheets = load_data(uploaded_file)
     sheet_names = list(all_sheets.keys())
     st.subheader(f"📑 Sheet yang terdeteksi: {', '.join(sheet_names)}")
@@ -229,7 +255,7 @@ if uploaded_file is not None:
             st.write(f"⏳ Memproses sheet: **{sheet}**")
             df_raw = all_sheets[sheet].copy()
             
-            # Parse datetime
+            # Parse datetime (setelah sebelumnya sudah dibersihkan placeholder)
             try:
                 df_raw = parse_datetime(df_raw, sheet)
             except Exception as e:
@@ -241,14 +267,14 @@ if uploaded_file is not None:
                 st.warning(f"Sheet {sheet}: Tidak ada data survei (Field kosong). Dilewati.")
                 continue
             
-            # Filter Field
+            # Filter Field (jika ada)
             if field_method != "None":
                 survey_df['Field_filtered'] = apply_filter(survey_df['Field'], field_method, **field_params)
             else:
                 survey_df['Field_filtered'] = survey_df['Field']
             
-            # Filter Altitude
-            if alt_method != "None":
+            # Filter Altitude (jika ada, dan hanya jika kolom Altitude tidak kosong semua)
+            if alt_method != "None" and survey_df['Altitude'].notna().any():
                 survey_df['Altitude_filtered'] = apply_filter(survey_df['Altitude'], alt_method, **alt_params)
             else:
                 survey_df['Altitude_filtered'] = survey_df['Altitude']
@@ -307,7 +333,7 @@ if uploaded_file is not None:
         
         if not plot_df.empty:
             # ========== 1. PLOT PERBANDINGAN FIELD sebelum/sesudah filter ==========
-            st.header("📈 Perbandingan Field Original vs Filtered (per sheet atau gabungan)")
+            st.header("📈 Perbandingan Field Original vs Filtered (per sheet)")
             fig_field, ax_field = plt.subplots(figsize=(12, 5))
             for sheet in selected_sheets:
                 df_sheet = plot_df[plot_df['Sheet_Name'] == sheet].sort_values('datetime')
