@@ -1,5 +1,6 @@
 streamlit 
 pandas 
+python < 3.15
 numpy 
 plotly 
 scipy 
