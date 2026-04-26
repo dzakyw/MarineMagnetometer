@@ -1,9 +1,9 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import plotly.graph_objects as go
-import plotly.express as px
-from plotly.subplots import make_subplots
+import matplotlib.pyplot as plt
+from matplotlib.cm import ScalarMappable
+from matplotlib.colors import Normalize
 from scipy.signal import savgol_filter, butter, filtfilt
 from scipy.interpolate import CubicSpline
 from scipy.stats import median_abs_deviation
@@ -260,118 +260,86 @@ if uploaded_file is not None:
 
         # ========== 1. PLOT PERBANDINGAN FIELD SEBELUM & SESUDAH FILTER ==========
         st.header("📈 Perbandingan Field Original vs Filtered")
-        fig_compare_field = go.Figure()
-        fig_compare_field.add_trace(go.Scatter(y=survey_df['Field'], mode='lines', name='Field Original', line=dict(color='gray')))
-        fig_compare_field.add_trace(go.Scatter(y=survey_df['Field_filtered'], mode='lines', name='Field Filtered', line=dict(color='red')))
-        fig_compare_field.update_layout(xaxis_title="Index", yaxis_title="nT", title="Field Sebelum dan Sesudah Filter")
-        st.plotly_chart(fig_compare_field, use_container_width=True)
+        fig_field, ax_field = plt.subplots(figsize=(12, 4))
+        ax_field.plot(survey_df['Field'].values, 'gray', label='Field Original', linewidth=1)
+        ax_field.plot(survey_df['Field_filtered'].values, 'r', label='Field Filtered', linewidth=1)
+        ax_field.set_xlabel('Index')
+        ax_field.set_ylabel('nT')
+        ax_field.set_title('Field Sebelum dan Sesudah Filter')
+        ax_field.legend()
+        st.pyplot(fig_field)
+        plt.close(fig_field)
 
         # ========== 2. PLOT TMI ==========
         st.subheader("📉 Total Magnetic Intensity (TMI) setelah koreksi")
-        fig_tmi = go.Figure()
-        fig_tmi.add_trace(go.Scatter(y=survey_df['TMI'], mode='lines', name='TMI', line=dict(color='blue')))
-        fig_tmi.update_layout(xaxis_title="Index", yaxis_title="nT")
-        st.plotly_chart(fig_tmi, use_container_width=True)
+        fig_tmi, ax_tmi = plt.subplots(figsize=(12, 4))
+        ax_tmi.plot(survey_df['TMI'].values, 'b', label='TMI', linewidth=1)
+        ax_tmi.set_xlabel('Index')
+        ax_tmi.set_ylabel('nT')
+        ax_tmi.set_title('TMI')
+        st.pyplot(fig_tmi)
+        plt.close(fig_tmi)
 
-        # ========== 3. PETA LINTASAN HITAM + START/END ==========
+        # ========== 3. PETA LINTASAN HITAM (Matplotlib) ==========
         st.header("🗺️ Peta Lintasan Survei (Garis Hitam) dengan Titik Awal & Akhir")
         plot_df = survey_df.dropna(subset=['Latitude', 'Longitude']).copy()
         if not plot_df.empty:
             plot_df = plot_df.sort_values('datetime')
-            fig_track = go.Figure()
-            # Garis hitam
-            fig_track.add_trace(go.Scattermapbox(
-                lon=plot_df['Longitude'],
-                lat=plot_df['Latitude'],
-                mode='lines',
-                line=dict(width=2, color='black'),
-                name='Lintasan'
-            ))
+            fig_track, ax_track = plt.subplots(figsize=(10, 8))
+            # Plot garis hitam
+            ax_track.plot(plot_df['Longitude'], plot_df['Latitude'], 'k-', linewidth=1.5, label='Lintasan')
             # Titik awal hijau
             first = plot_df.iloc[0]
-            fig_track.add_trace(go.Scattermapbox(
-                lon=[first['Longitude']], lat=[first['Latitude']],
-                mode='markers+text',
-                marker=dict(size=10, color='green'),
-                text=[f"Start: {first['datetime'].strftime('%Y-%m-%d %H:%M:%S')}"],
-                textposition='top right',
-                textfont=dict(size=11),
-                showlegend=False
-            ))
+            ax_track.plot(first['Longitude'], first['Latitude'], 'go', markersize=8, label=f'Start: {first["datetime"].strftime("%Y-%m-%d %H:%M:%S")}')
             # Titik akhir merah
             last = plot_df.iloc[-1]
-            fig_track.add_trace(go.Scattermapbox(
-                lon=[last['Longitude']], lat=[last['Latitude']],
-                mode='markers+text',
-                marker=dict(size=10, color='red'),
-                text=[f"End: {last['datetime'].strftime('%Y-%m-%d %H:%M:%S')}"],
-                textposition='top left',
-                textfont=dict(size=11),
-                showlegend=False
-            ))
-            fig_track.update_layout(
-                mapbox_style="open-street-map",
-                mapbox=dict(center=dict(lat=plot_df['Latitude'].mean(), lon=plot_df['Longitude'].mean()), zoom=8),
-                margin=dict(l=0, r=0, t=40, b=0)
-            )
-            st.plotly_chart(fig_track, use_container_width=True)
+            ax_track.plot(last['Longitude'], last['Latitude'], 'ro', markersize=8, label=f'End: {last["datetime"].strftime("%Y-%m-%d %H:%M:%S")}')
+            ax_track.set_xlabel('Longitude')
+            ax_track.set_ylabel('Latitude')
+            ax_track.set_title('Lintasan Survei')
+            ax_track.legend(loc='best')
+            ax_track.grid(True, linestyle=':', alpha=0.5)
+            st.pyplot(fig_track)
+            plt.close(fig_track)
         else:
             st.warning("Tidak ada koordinat valid untuk peta lintasan.")
 
-        # ========== 4. PETA ANOMALI MAGNET (Scattermapbox dengan warna) ==========
+        # ========== 4. PETA ANOMALI MAGNET (Scatter warna dengan Matplotlib) ==========
         st.header(f"🗺️ Peta Anomali Magnet ({anomaly_type})")
-        # Filter data yang memiliki nilai anomali valid dan koordinat valid
-        anomaly_df = plot_df.dropna(subset=[anomaly_type, 'Latitude', 'Longitude'])
+        anomaly_df = plot_df.dropna(subset=[anomaly_type, 'Latitude', 'Longitude']).copy()
         if not anomaly_df.empty:
-            # Gunakan go.Scattermapbox dengan marker warna berdasarkan nilai
-            # Buat list warna berdasarkan colormap (menggunakan Plotly colorscale)
-            colorscale = px.colors.sequential.Viridis
-            # Normalisasi nilai anomaly
+            fig_anom, ax_anom = plt.subplots(figsize=(10, 8))
+            # Buat normalize dan colormap
             vmin = anomaly_df[anomaly_type].min()
             vmax = anomaly_df[anomaly_type].max()
-            # Hindari pembagian oleh nol jika vmin==vmax
-            if vmax == vmin:
-                norm_vals = np.zeros(len(anomaly_df))
-            else:
-                norm_vals = (anomaly_df[anomaly_type].values - vmin) / (vmax - vmin)
-            # Pilih indeks warna
-            marker_colors = [px.colors.sample_colorscale(colorscale, norm)[0] for norm in norm_vals]
-            
-            fig_anom = go.Figure()
-            # Tambahkan trace untuk setiap titik (atau satu trace dengan marker warna berbeda)
-            # Lebih mudah: gunakan satu trace dengan marker color array
-            fig_anom.add_trace(go.Scattermapbox(
-                lon=anomaly_df['Longitude'],
-                lat=anomaly_df['Latitude'],
-                mode='markers',
-                marker=dict(size=4, color=marker_colors),
-                text=anomaly_df[anomaly_type].round(1).astype(str) + ' nT',
-                hoverinfo='text+lon+lat',
-                name='Anomali'
-            ))
-            fig_anom.update_layout(
-                mapbox_style="open-street-map",
-                mapbox=dict(center=dict(lat=anomaly_df['Latitude'].mean(), lon=anomaly_df['Longitude'].mean()), zoom=8),
-                margin=dict(l=0, r=0, t=40, b=0),
-                title=f"Distribusi {anomaly_type} (warna dari {vmin:.1f} ke {vmax:.1f} nT)"
-            )
-            # Add colorbar manually via a dummy heatmap? Not necessary; show color scale in title.
-            st.plotly_chart(fig_anom, use_container_width=True)
+            norm = Normalize(vmin=vmin, vmax=vmax)
+            cmap = plt.cm.viridis
+            sc = ax_anom.scatter(anomaly_df['Longitude'], anomaly_df['Latitude'], 
+                                 c=anomaly_df[anomaly_type], s=10, cmap=cmap, norm=norm)
+            cbar = plt.colorbar(sc, ax=ax_anom, label=f'{anomaly_type} (nT)')
+            ax_anom.set_xlabel('Longitude')
+            ax_anom.set_ylabel('Latitude')
+            ax_anom.set_title(f'Distribusi {anomaly_type}')
+            ax_anom.grid(True, linestyle=':', alpha=0.5)
+            st.pyplot(fig_anom)
+            plt.close(fig_anom)
         else:
             st.warning(f"Tidak ada data valid untuk {anomaly_type} setelah filter koordinat.")
 
         # ========== 5. PROFIL ANOMALI SEPANJANG JARAK ==========
         st.header("📏 Profil Anomali Sepanjang Jarak")
         if not anomaly_df.empty:
-            # Urutkan berdasarkan datetime untuk semua data (tanpa split line)
             anomaly_df_sorted = anomaly_df.sort_values('datetime')
             if len(anomaly_df_sorted) > 1:
                 dist = compute_distance_along_line(anomaly_df_sorted)
-                fig_profile = go.Figure()
-                fig_profile.add_trace(go.Scatter(x=dist/1000, y=anomaly_df_sorted[anomaly_type], mode='lines+markers',
-                                                 marker=dict(size=3), line=dict(width=1)))
-                fig_profile.update_layout(xaxis_title="Jarak (km)", yaxis_title=f"{anomaly_type} (nT)")
-                st.plotly_chart(fig_profile, use_container_width=True)
+                fig_profile, ax_profile = plt.subplots(figsize=(12, 5))
+                ax_profile.plot(dist/1000, anomaly_df_sorted[anomaly_type], 'b-', linewidth=1, marker='.', markersize=2)
+                ax_profile.set_xlabel('Jarak (km)')
+                ax_profile.set_ylabel(f'{anomaly_type} (nT)')
+                ax_profile.set_title('Profil Anomali')
+                ax_profile.grid(True, linestyle=':', alpha=0.5)
+                st.pyplot(fig_profile)
+                plt.close(fig_profile)
             else:
                 st.info("Tidak cukup titik untuk membuat profil jarak.")
         else:
