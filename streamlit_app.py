@@ -121,7 +121,7 @@ def butterworth_filter(series, cutoff=0.1, fs=1.0, order=4, btype='low'):
     normal_cutoff = cutoff / nyquist
     b, a = butter(order, normal_cutoff, btype=btype, analog=False)
     if series.isna().any():
-        series = series.fillna(series.median())
+        series = series.interpolate(method='cubic', limit_direction='both')
     return filtfilt(b, a, series)
 
 def apply_filter(series, method, **params):
