@@ -127,18 +127,29 @@ def butterworth_filter(series, cutoff=0.1, fs=1.0, order=4, btype='low'):
 def apply_filter(series, method, **params):
     if method == 'Hampel (despiking)':
         cleaned, _ = hampel_filter(series, window_size=params.get('window', 5), n_sigmas=params.get('threshold', 3.0))
-        result = interpolate_nan(cleaned, method='cubic')
+        result = interpolate_nan(cleaned, method='cubic')  # already uses cubic spline
     elif method == 'Moving Average':
         result = moving_average(series, window=params.get('window', 5))
     elif method == 'Savitzky-Golay':
         window = params.get('window', 11)
         if window % 2 == 0:
             window += 1
-        temp = series.interpolate(method='linear', limit_direction='both')
+        # For Savitzky-Golay, we also interpolate using cubic spline first
+        if series.isna().any():
+            temp = interpolate_nan(series, method='cubic')
+        else:
+            temp = series
         result = savgol_filter(temp, window_length=window, polyorder=3)
         result = pd.Series(result, index=series.index)
     elif method == 'Butterworth Lowpass':
-        result = butterworth_filter(series, cutoff=params.get('cutoff', 0.1), fs=1.0, order=4)
+        # First, interpolate missing values using cubic spline (or fallback to linear)
+        if series.isna().any():
+            temp = interpolate_nan(series, method='cubic')
+        else:
+            temp = series
+        # Now apply the Butterworth filter on the continuous series
+        result = butterworth_filter(temp, cutoff=params.get('cutoff', 0.1), fs=1.0, order=4)
+        result = pd.Series(result, index=series.index)
     else:
         result = series.copy()
     return result
