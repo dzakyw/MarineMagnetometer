@@ -416,8 +416,9 @@ if uploaded_file is not None:
                     try:
                         X, Y, Z_grid = gridded_anomaly_map(x, y, z, method=grid_meth, grid_resolution=grid_resolution)
                         fig_anom, ax_anom = plt.subplots(figsize=(10, 8))
-                        cf = ax_anom.contourf(X, Y, Z_grid, level= 1000 ,vmin=-80, vmax=80,cmap='jet', alpha=0.8)
-                        plt.colorbar(cf, ax=ax_anom, label=f'{anomaly_type} (nT)')
+                        vmin, vmax = -80, 80
+                        cf = ax_anom.contourf(X, Y, Z_grid, levels=20, cmap='jet', alpha=0.8, vmin=vmin, vmax=vmax)
+                        plt.colorbar(cf, ax=ax_anom, label=f'{anomaly_type} (nT)', extend='both')
                         if show_track_lines:
                             for sheet in selected_sheets:
                                 line_df = plot_df[plot_df['Sheet_Name'] == sheet].dropna(subset=['Longitude', 'Latitude']).sort_values('datetime')
