@@ -356,7 +356,7 @@ if uploaded_file is not None:
                 df_sheet = plot_df[plot_df['Sheet_Name'] == sheet].sort_values('datetime')
                 if not df_sheet.empty:
                     fig_tmi, ax_tmi = plt.subplots(figsize=(12, 5))
-                    ax_tmi.plot(df_sheet['Reading_Time'], df_sheet['TMI'], 'b-', linewidth=1, label=sheet)
+                    ax_tmi.plot(df_sheet['datetime'], df_sheet['TMI'], 'b-', linewidth=1, label=sheet)
                     ax_tmi.set_xlabel('Waktu (UTC)')
                     ax_tmi.set_ylabel('TMI (nT)')
                     ax_tmi.set_title(f'TMI - Sheet {sheet}')
