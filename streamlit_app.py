@@ -4,7 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.colors import Normalize
 from scipy.signal import savgol_filter, butter, filtfilt
-from scipy.interpolate import CubicSpline, RBFInterpolator, griddata
+from scipy.interpolate import CubicSpline, RBFInterpolator, griddata, PchipInterpolator
 from scipy.stats import median_abs_deviation
 from math import radians, sin, cos, sqrt, atan2
 
@@ -104,11 +104,17 @@ def hampel_filter(series, window_size=5, n_sigmas=3.0):
     return cleaned, outlier_mask
 
 def interpolate_nan(series, method='cubic'):
+    """
+    method: 'linear', 'cubic', 'pchip'
+    """
     idx = series.index
     valid = ~np.isnan(series.values)
     if method == 'cubic' and np.sum(valid) > 3:
         cs = CubicSpline(idx[valid], series.values[valid])
         interpolated = cs(idx)
+    elif method == 'pchip' and np.sum(valid) > 1:
+        pchip = PchipInterpolator(idx[valid], series.values[valid])
+        interpolated = pchip(idx)
     else:
         interpolated = series.interpolate(method='linear', limit_direction='both')
     return pd.Series(interpolated, index=idx)
@@ -121,33 +127,30 @@ def butterworth_filter(series, cutoff=0.1, fs=1.0, order=4, btype='low'):
     normal_cutoff = cutoff / nyquist
     b, a = butter(order, normal_cutoff, btype=btype, analog=False)
     if series.isna().any():
-        series = series.interpolate(method='cubic', limit_direction='both')
+        series = series.interpolate(method='linear', limit_direction='both')
     return filtfilt(b, a, series)
 
-def apply_filter(series, method, **params):
+def apply_filter(series, method, interp_method='cubic', **params):
     if method == 'Hampel (despiking)':
         cleaned, _ = hampel_filter(series, window_size=params.get('window', 5), n_sigmas=params.get('threshold', 3.0))
-        result = interpolate_nan(cleaned, method='cubic')  # already uses cubic spline
+        result = interpolate_nan(cleaned, method=interp_method)
     elif method == 'Moving Average':
         result = moving_average(series, window=params.get('window', 5))
     elif method == 'Savitzky-Golay':
         window = params.get('window', 11)
         if window % 2 == 0:
             window += 1
-        # For Savitzky-Golay, we also interpolate using cubic spline first
         if series.isna().any():
-            temp = interpolate_nan(series, method='cubic')
+            temp = interpolate_nan(series, method=interp_method)
         else:
             temp = series
         result = savgol_filter(temp, window_length=window, polyorder=3)
         result = pd.Series(result, index=series.index)
     elif method == 'Butterworth Lowpass':
-        # First, interpolate missing values using cubic spline (or fallback to linear)
         if series.isna().any():
-            temp = interpolate_nan(series, method='cubic')
+            temp = interpolate_nan(series, method=interp_method)
         else:
             temp = series
-        # Now apply the Butterworth filter on the continuous series
         result = butterworth_filter(temp, cutoff=params.get('cutoff', 0.1), fs=1.0, order=4)
         result = pd.Series(result, index=series.index)
     else:
@@ -179,9 +182,7 @@ def compute_diurnal_correction(survey_df, base_df, reference_method='first'):
         ref_val = 0.0
     
     correction = np.zeros(len(survey_df))
-    # Assign using integer indexing
-    for pos, idx in enumerate(survey_df_valid.index):
-        correction[idx] = interpolated[pos] - ref_val
+    correction[survey_df_valid.index] = interpolated - ref_val
     return correction
 
 def compute_distance_along_line(df):
@@ -203,36 +204,28 @@ def compute_distance_along_line(df):
 
 def gridded_anomaly_map(x, y, z, method='cubic', grid_resolution=50):
     """Buat grid dari data tidak teratur.
-    x, y: longitude, latitude (array 1D)
-    z: TMI atau anomaly
     method: 'linear', 'cubic', 'rbf'
-    grid_resolution: jumlah titik grid per sumbu
     """
-    # Definisikan batas grid (perluas sedikit dari range data)
     x_min, x_max = x.min(), x.max()
     y_min, y_max = y.min(), y.max()
-    # Tambahkan margin 5%
     margin = max((x_max - x_min)*0.05, 0.01)
     x_grid = np.linspace(x_min - margin, x_max + margin, grid_resolution)
     y_grid = np.linspace(y_min - margin, y_max + margin, grid_resolution)
     X, Y = np.meshgrid(x_grid, y_grid)
     
     if method == 'rbf':
-        # RBFInterpolator butuh input 2D (N,2)
         points = np.column_stack((x, y))
         values = z
-        # Kernel bisa diatur, default multiquadric
         rbf = RBFInterpolator(points, values, kernel='thin_plate_spline', smoothing=0.0)
         Z = rbf(np.column_stack((X.ravel(), Y.ravel()))).reshape(X.shape)
     else:
-        # griddata dengan method linear atau cubic
         Z = griddata((x, y), z, (X, Y), method=method)
     return X, Y, Z
 
 # ================== MAIN STREAMLIT APP ==================
 
-st.set_page_config(page_title="Marine Magnetic Processing with Gridding", layout="wide")
-st.title("🌊 Pengolahan Data Magnetik Kelautan – Gridding Anomali + Lintasan Hitam")
+st.set_page_config(page_title="Marine Magnetic Processing with PCHIP", layout="wide")
+st.title("🌊 Pengolahan Data Magnetik Kelautan – Interpolasi PCHIP + Gridding")
 
 uploaded_file = st.sidebar.file_uploader("📂 Upload file Excel (multi‑sheet) atau CSV", type=['xlsx', 'csv'])
 
@@ -242,6 +235,14 @@ if uploaded_file is not None:
     st.subheader(f"📑 Sheet yang terdeteksi: {', '.join(sheet_names)}")
     
     st.sidebar.header("🔧 Parameter Filtering")
+    
+    # Pilihan metode interpolasi untuk mengisi NaN
+    interp_method = st.sidebar.selectbox(
+        "Metode interpolasi untuk mengisi gap (spike)",
+        ["cubic", "pchip", "linear"],
+        index=0,  # default cubic
+        help="Cubic: halus namun bisa overshoot; PCHIP: halus tanpa overshoot; Linear: aman tapi kurang mulus"
+    )
     
     field_method = st.sidebar.selectbox("Filter Field", ["None", "Hampel (despiking)", "Moving Average", "Savitzky-Golay", "Butterworth Lowpass"])
     field_params = {}
@@ -298,11 +299,11 @@ if uploaded_file is not None:
                 st.warning(f"Sheet {sheet}: Tidak ada data survei. Dilewati.")
                 continue
             if field_method != "None":
-                survey_df['Field_filtered'] = apply_filter(survey_df['Field'], field_method, **field_params)
+                survey_df['Field_filtered'] = apply_filter(survey_df['Field'], field_method, interp_method=interp_method, **field_params)
             else:
                 survey_df['Field_filtered'] = survey_df['Field']
             if alt_method != "None" and survey_df['Altitude'].notna().any():
-                survey_df['Altitude_filtered'] = apply_filter(survey_df['Altitude'], alt_method, **alt_params)
+                survey_df['Altitude_filtered'] = apply_filter(survey_df['Altitude'], alt_method, interp_method=interp_method, **alt_params)
             else:
                 survey_df['Altitude_filtered'] = survey_df['Altitude']
             if not base_df.empty:
@@ -346,7 +347,7 @@ if uploaded_file is not None:
         selected_sheets = st.multiselect("Pilih sheet untuk ditampilkan", sheets_present, default=sheets_present)
         plot_df = final_df[final_df['Sheet_Name'].isin(selected_sheets)].copy()
         if not plot_df.empty:
-            # Plot perbandingan Field
+            # Plot perbandingan Field (digabung dalam satu figure)
             st.header("📈 Perbandingan Field Original vs Filtered")
             fig_field, ax_field = plt.subplots(figsize=(12, 4))
             for sheet in selected_sheets:
@@ -360,8 +361,7 @@ if uploaded_file is not None:
             st.pyplot(fig_field)
             plt.close(fig_field)
             
-            # Plot TMI
-            # ========== 2. PLOT TMI per sheet dengan sumbu x waktu ==========
+            # Plot TMI per sheet dengan sumbu x waktu
             st.header("📉 Total Magnetic Intensity (TMI) setelah koreksi (per sheet)")
             for sheet in selected_sheets:
                 df_sheet = plot_df[plot_df['Sheet_Name'] == sheet].sort_values('datetime')
@@ -373,7 +373,6 @@ if uploaded_file is not None:
                     ax_tmi.set_title(f'TMI - Sheet {sheet}')
                     ax_tmi.legend()
                     ax_tmi.grid(True, linestyle=':', alpha=0.5)
-                    # Rotasi label agar tidak bertumpuk
                     plt.xticks(rotation=45)
                     st.pyplot(fig_tmi)
                     plt.close(fig_tmi)
@@ -382,7 +381,6 @@ if uploaded_file is not None:
             
             # ========== GRIDDING & PETA ANOMALI ==========
             st.header(f"🗺️ Peta Anomali {anomaly_type} dengan Gridding ({gridding_method})")
-            # Ambil semua data koordinat dan anomali (tanpa NaN)
             grid_df = plot_df.dropna(subset=['Longitude', 'Latitude', anomaly_type]).copy()
             if len(grid_df) < 4:
                 st.warning("Tidak cukup titik untuk membuat grid (minimal 4 titik).")
@@ -391,7 +389,6 @@ if uploaded_file is not None:
                 y = grid_df['Latitude'].values
                 z = grid_df[anomaly_type].values
                 
-                # Buat grid sesuai pilihan
                 if gridding_method == "Tanpa Grid (scatter)":
                     fig_anom, ax_anom = plt.subplots(figsize=(10, 8))
                     sc = ax_anom.scatter(x, y, c=z, s=10, cmap='jet', norm=Normalize(vmin=z.min(), vmax=z.max()))
@@ -407,7 +404,6 @@ if uploaded_file is not None:
                     st.pyplot(fig_anom)
                     plt.close(fig_anom)
                 else:
-                    # Pilih method untuk griddata
                     if gridding_method == "Linear":
                         grid_meth = 'linear'
                     elif gridding_method == "Cubic":
@@ -420,10 +416,8 @@ if uploaded_file is not None:
                     try:
                         X, Y, Z_grid = gridded_anomaly_map(x, y, z, method=grid_meth, grid_resolution=grid_resolution)
                         fig_anom, ax_anom = plt.subplots(figsize=(10, 8))
-                        # Plot grid sebagai kontur atau pcolormesh
                         cf = ax_anom.contourf(X, Y, Z_grid, levels=20, cmap='jet', alpha=0.8)
                         plt.colorbar(cf, ax=ax_anom, label=f'{anomaly_type} (nT)')
-                        # Overlay lintasan hitam
                         if show_track_lines:
                             for sheet in selected_sheets:
                                 line_df = plot_df[plot_df['Sheet_Name'] == sheet].dropna(subset=['Longitude', 'Latitude']).sort_values('datetime')
