@@ -340,9 +340,9 @@ if uploaded_file is not None:
             fig_field, ax_field = plt.subplots(figsize=(12, 4))
             for sheet in selected_sheets:
                 df_sheet = plot_df[plot_df['Sheet_Name'] == sheet].sort_values('datetime')
-                ax_field.plot(df_sheet['Field'].values, '--', alpha=0.5, label=f'{sheet} Original')
-                ax_field.plot(df_sheet['Field_filtered'].values, '-', alpha=0.8, label=f'{sheet} Filtered')
-            ax_field.set_xlabel('Index')
+                ax_field.plot(df_sheet['datetime'], df_sheet['Field'].values, '--', alpha=0.5, label=f'{sheet} Original')
+                ax_field.plot(df_sheet['datetime'], df_sheet['Field_filtered'].values, '-', alpha=0.8, label=f'{sheet} Filtered')
+            ax_field.set_xlabel('Time')
             ax_field.set_ylabel('nT')
             ax_field.legend(loc='best', ncol=2)
             ax_field.grid(True, alpha=0.3)
