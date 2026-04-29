@@ -8,7 +8,9 @@ from scipy.interpolate import CubicSpline, RBFInterpolator, griddata, PchipInter
 from scipy.stats import median_abs_deviation
 from math import radians, sin, cos, sqrt, atan2
 
-# ================== UTILITY FUNCTIONS ==================
+# ------------------------------------------------------------
+# UTILITY FUNCTIONS
+# ------------------------------------------------------------
 
 def clean_string_placeholders(df, columns):
     for col in columns:
@@ -104,9 +106,6 @@ def hampel_filter(series, window_size=5, n_sigmas=3.0):
     return cleaned, outlier_mask
 
 def interpolate_nan(series, method='cubic'):
-    """
-    method: 'linear', 'cubic', 'pchip'
-    """
     idx = series.index
     valid = ~np.isnan(series.values)
     if method == 'cubic' and np.sum(valid) > 3:
@@ -151,7 +150,7 @@ def apply_filter(series, method, interp_method='cubic', **params):
             temp = interpolate_nan(series, method=interp_method)
         else:
             temp = series
-        result = butterworth_filter(temp, cutoff=params.get('cutoff', 0.1), fs=1.0, order=4)
+        result = butterworth_filter(temp, cutoff=params.get('cutoff', 0.05), fs=1.0, order=4)
         result = pd.Series(result, index=series.index)
     else:
         result = series.copy()
@@ -163,24 +162,19 @@ def compute_diurnal_correction(survey_df, base_df, reference_method='first'):
     base_df = base_df.dropna(subset=['base_datetime']).sort_values('base_datetime')
     if base_df.empty:
         return np.zeros(len(survey_df))
-    
     survey_df_valid = survey_df.dropna(subset=['datetime']).copy()
     if survey_df_valid.empty:
         return np.zeros(len(survey_df))
-    
     base_ts = base_df['base_datetime'].astype('int64') // 10**9
     base_vals = base_df['Fbase'].values
     survey_ts = survey_df_valid['datetime'].astype('int64') // 10**9
-    
     interpolated = np.interp(survey_ts, base_ts, base_vals)
-    
     if reference_method == 'first':
         ref_val = base_vals[0]
     elif reference_method == 'mean':
         ref_val = np.mean(base_vals)
     else:
         ref_val = 0.0
-    
     correction = np.zeros(len(survey_df))
     correction[survey_df_valid.index] = interpolated - ref_val
     return correction
@@ -203,16 +197,12 @@ def compute_distance_along_line(df):
     return np.array(distances)
 
 def gridded_anomaly_map(x, y, z, method='cubic', grid_resolution=50):
-    """Buat grid dari data tidak teratur.
-    method: 'linear', 'cubic', 'rbf'
-    """
     x_min, x_max = x.min(), x.max()
     y_min, y_max = y.min(), y.max()
     margin = max((x_max - x_min)*0.05, 0.01)
     x_grid = np.linspace(x_min - margin, x_max + margin, grid_resolution)
     y_grid = np.linspace(y_min - margin, y_max + margin, grid_resolution)
     X, Y = np.meshgrid(x_grid, y_grid)
-    
     if method == 'rbf':
         points = np.column_stack((x, y))
         values = z
@@ -222,10 +212,12 @@ def gridded_anomaly_map(x, y, z, method='cubic', grid_resolution=50):
         Z = griddata((x, y), z, (X, Y), method=method)
     return X, Y, Z
 
-# ================== MAIN STREAMLIT APP ==================
+# ------------------------------------------------------------
+# MAIN STREAMLIT APP
+# ------------------------------------------------------------
 
-st.set_page_config(page_title="Marine Magnetic Processing with PCHIP", layout="wide")
-st.title("🌊 Pengolahan Data Magnetik Kelautan – Interpolasi PCHIP + Gridding")
+st.set_page_config(page_title="Marine Magnetic Processing", layout="wide")
+st.title("🌊 Pengolahan Data Magnetik Kelautan – Multi Sheet + IGRF Manual")
 
 uploaded_file = st.sidebar.file_uploader("📂 Upload file Excel (multi‑sheet) atau CSV", type=['xlsx', 'csv'])
 
@@ -235,15 +227,7 @@ if uploaded_file is not None:
     st.subheader(f"📑 Sheet yang terdeteksi: {', '.join(sheet_names)}")
     
     st.sidebar.header("🔧 Parameter Filtering")
-    
-    # Pilihan metode interpolasi untuk mengisi NaN
-    interp_method = st.sidebar.selectbox(
-        "Metode interpolasi untuk mengisi gap (spike)",
-        ["cubic", "pchip", "linear"],
-        index=0,  # default cubic
-        help="Cubic: halus namun bisa overshoot; PCHIP: halus tanpa overshoot; Linear: aman tapi kurang mulus"
-    )
-    
+    interp_method = st.sidebar.selectbox("Metode interpolasi untuk mengisi gap (spike)", ["cubic", "pchip", "linear"], index=0)
     field_method = st.sidebar.selectbox("Filter Field", ["None", "Hampel (despiking)", "Moving Average", "Savitzky-Golay", "Butterworth Lowpass"])
     field_params = {}
     if field_method == "Hampel (despiking)":
@@ -253,7 +237,6 @@ if uploaded_file is not None:
         field_params['window'] = st.sidebar.slider("Window size", 3, 51, 11, 2)
     elif field_method == "Butterworth Lowpass":
         field_params['cutoff'] = st.sidebar.slider("Cutoff frequency (0-0.5)", 0.01, 0.1, 0.05, 0.01)
-    
     alt_method = st.sidebar.selectbox("Filter Altitude", ["None", "Hampel (despiking)", "Moving Average", "Savitzky-Golay"])
     alt_params = {}
     if alt_method == "Hampel (despiking)":
@@ -263,21 +246,17 @@ if uploaded_file is not None:
         alt_params['window'] = st.sidebar.slider("Window size Alt", 3, 51, 11, 2)
 
     st.sidebar.header("🧲 IGRF Source (Manual)")
-    igrf_option = st.sidebar.radio(
-        "Pilih cara input IGRF:",
-        ["Constant value", "Upload IGRF file (CSV)", "Skip IGRF (set to 0)"]
-    )
+    igrf_option = st.sidebar.radio("Pilih cara input IGRF:", ["Constant value", "Upload file (Excel/CSV per hari)", "Skip IGRF (set to 0)"])
     constant_igrf = None
     igrf_file = None
     if igrf_option == "Constant value":
         constant_igrf = st.sidebar.number_input("Nilai IGRF konstan (nT):", value=45000.0, step=100.0)
-    elif igrf_option == "Upload IGRF file (CSV)":
-        igrf_file = st.sidebar.file_uploader("Upload CSV dengan kolom 'datetime' atau index dan 'IGRF'", type=['csv', 'xlsx'])
+    elif igrf_option == "Upload file (Excel/CSV per hari)":
+        igrf_file = st.sidebar.file_uploader("Upload Excel/CSV dengan kolom 'datetime' dan 'IGRF'", type=['csv', 'xlsx'])
         if igrf_file:
-            st.sidebar.success("File IGRF terupload.")
+            st.sidebar.success("File IGRF terupload (akan dicocokkan per tanggal).")
 
     anomaly_type = st.sidebar.selectbox("Peta Anomali menggunakan:", ["Field_filtered", "TMI"])
-    
     st.sidebar.header("🗺️ Gridding Options")
     gridding_method = st.sidebar.selectbox("Metode gridding", ["Tanpa Grid (scatter)", "Linear", "Cubic", "RBF (Thin Plate Spline)"])
     grid_resolution = st.sidebar.slider("Resolusi grid (jumlah titik)", 30, 150, 60, 10)
@@ -298,28 +277,30 @@ if uploaded_file is not None:
             if survey_df.empty:
                 st.warning(f"Sheet {sheet}: Tidak ada data survei. Dilewati.")
                 continue
+            # Apply Field filter
             if field_method != "None":
                 survey_df['Field_filtered'] = apply_filter(survey_df['Field'], field_method, interp_method=interp_method, **field_params)
             else:
                 survey_df['Field_filtered'] = survey_df['Field']
+            # Apply Altitude filter
             if alt_method != "None" and survey_df['Altitude'].notna().any():
                 survey_df['Altitude_filtered'] = apply_filter(survey_df['Altitude'], alt_method, interp_method=interp_method, **alt_params)
             else:
                 survey_df['Altitude_filtered'] = survey_df['Altitude']
+            # Diurnal correction (using base from this sheet)
             if not base_df.empty:
-                diurnal_corr = compute_diurnal_correction(survey_df, base_df, reference_method='first')
-                survey_df['Diurnal_Correction'] = diurnal_corr
+                survey_df['Diurnal_Correction'] = compute_diurnal_correction(survey_df, base_df, reference_method='first')
             else:
                 survey_df['Diurnal_Correction'] = 0.0
+            # IGRF handling
             if igrf_option == "Constant value":
                 survey_df['IGRF'] = constant_igrf
-            elif igrf_option == "Upload IGRF file (Excel/CSV)" and igrf_file is not None:
+            elif igrf_option == "Upload file (Excel/CSV per hari)" and igrf_file is not None:
                 try:
-                    # Read file based on extension
+                    # Read file
                     if igrf_file.name.endswith('.xlsx'):
                         igrf_df = pd.read_excel(igrf_file)
                     else:
-                        # Try different delimiters for CSV
                         igrf_df = None
                         for sep in [',', ';', '\t']:
                             try:
@@ -329,50 +310,27 @@ if uploaded_file is not None:
                             except:
                                 continue
                         if igrf_df is None:
-                            raise ValueError("Could not read CSV with any common delimiter.")
-                    
-                    # Convert column names to lowercase for case-insensitive matching
+                            raise ValueError("Could not read CSV with any delimiter.")
                     igrf_df.columns = igrf_df.columns.str.lower()
-                    
-                    # Check for required columns
                     if 'datetime' not in igrf_df.columns or 'igrf' not in igrf_df.columns:
-                        raise ValueError("File must contain columns 'datetime' and 'IGRF' (case-insensitive).")
-                    
-                    # Convert IGRF datetime to datetime and extract date only
+                        raise ValueError("File must contain columns 'datetime' and 'IGRF'.")
+                    # Convert to date only for matching
                     igrf_df['datetime'] = pd.to_datetime(igrf_df['datetime'], utc=True, format='mixed')
-                    igrf_df['date'] = igrf_df['datetime'].dt.date   # date part (no time)
-                    
-                    # If multiple IGRF entries on same date, keep the first one (or average? we use first)
+                    igrf_df['date'] = igrf_df['datetime'].dt.date
                     igrf_df = igrf_df.drop_duplicates(subset=['date'], keep='first')
-                    
-                    # Extract date from survey datetime
                     survey_df['date'] = survey_df['datetime'].dt.date
-                    
-                    # Merge on date
                     survey_df = survey_df.merge(igrf_df[['date', 'igrf']], on='date', how='left')
-                    
-                    # Rename and fill missing
                     survey_df['IGRF'] = survey_df['igrf']
                     survey_df.drop(columns=['igrf', 'date'], inplace=True, errors='ignore')
-                    
-                    # Fill NaN IGRF with 0 (or could use a constant, but 0 is safe)
-                    if survey_df['IGRF'].isna().any():
-                        st.warning("Some survey dates have no matching IGRF entry. Those points will use IGRF = 0.")
-                        survey_df['IGRF'].fillna(0.0, inplace=True)
-                
+                    survey_df['IGRF'] = survey_df['IGRF'].fillna(0.0)
                 except Exception as e:
-                    st.error(f"Error reading IGRF file: {e}. IGRF set to 0 for all points.")
+                    st.error(f"Gagal memproses file IGRF: {e}. IGRF diisi 0.")
                     survey_df['IGRF'] = 0.0
-            
-            # If no IGRF file was uploaded or the option is not selected
-            else:
+            else:  # Skip IGRF
                 survey_df['IGRF'] = 0.0
-            
-            # Ensure IGRF column exists and is numeric
-            if 'IGRF' not in survey_df.columns:
-                survey_df['IGRF'] = 0.0
-            else:
-                survey_df['IGRF'] = pd.to_numeric(survey_df['IGRF'], errors='coerce').fillna(0.0)
+            # Ensure IGRF is numeric
+            survey_df['IGRF'] = pd.to_numeric(survey_df['IGRF'], errors='coerce').fillna(0.0)
+            # TMI
             survey_df['TMI'] = survey_df['Field_filtered'] - survey_df['IGRF'] - survey_df['Diurnal_Correction']
             survey_df['Sheet_Name'] = sheet
             all_results.append(survey_df)
@@ -389,12 +347,12 @@ if uploaded_file is not None:
         final_df = st.session_state['final_df']
         sheets_present = final_df['Sheet_Name'].unique()
         st.subheader("📊 Hasil gabungan")
-        st.dataframe(final_df[['Sheet_Name', 'datetime', 'Field', 'Field_filtered', 'TMI']].head(10))
+        st.dataframe(final_df[['Sheet_Name', 'datetime', 'Field', 'Field_filtered', 'IGRF', 'Diurnal_Correction', 'TMI']].head(10))
         
         selected_sheets = st.multiselect("Pilih sheet untuk ditampilkan", sheets_present, default=sheets_present)
         plot_df = final_df[final_df['Sheet_Name'].isin(selected_sheets)].copy()
         if not plot_df.empty:
-            # Plot perbandingan Field (digabung dalam satu figure)
+            # ---------- Field comparison (combined) ----------
             st.header("📈 Perbandingan Field Original vs Filtered")
             fig_field, ax_field = plt.subplots(figsize=(12, 4))
             for sheet in selected_sheets:
@@ -408,7 +366,7 @@ if uploaded_file is not None:
             st.pyplot(fig_field)
             plt.close(fig_field)
             
-            # Plot TMI per sheet dengan sumbu x waktu
+            # ---------- TMI per sheet with time axis ----------
             st.header("📉 Total Magnetic Intensity (TMI) setelah koreksi (per sheet)")
             for sheet in selected_sheets:
                 df_sheet = plot_df[plot_df['Sheet_Name'] == sheet].sort_values('datetime')
@@ -423,10 +381,8 @@ if uploaded_file is not None:
                     plt.xticks(rotation=45)
                     st.pyplot(fig_tmi)
                     plt.close(fig_tmi)
-                else:
-                    st.info(f"Sheet {sheet}: Tidak ada data TMI untuk diplot.")
             
-            # ========== GRIDDING & PETA ANOMALI ========== #
+            # ---------- Gridded anomaly map + track lines + start/end markers ----------
             st.header(f"🗺️ Peta {anomaly_type} - Gridding ({gridding_method})")
             grid_df = plot_df.dropna(subset=['Longitude', 'Latitude', anomaly_type]).copy()
             if len(grid_df) < 4:
@@ -435,7 +391,6 @@ if uploaded_file is not None:
                 x = grid_df['Longitude'].values
                 y = grid_df['Latitude'].values
                 z = grid_df[anomaly_type].values
-                
                 if gridding_method == "Tanpa Grid (scatter)":
                     fig_anom, ax_anom = plt.subplots(figsize=(10, 8))
                     sc = ax_anom.scatter(x, y, c=z, s=10, cmap='jet', norm=Normalize(vmin=z.min(), vmax=z.max()))
@@ -444,7 +399,7 @@ if uploaded_file is not None:
                         for sheet in selected_sheets:
                             line_df = plot_df[plot_df['Sheet_Name'] == sheet].dropna(subset=['Longitude', 'Latitude']).sort_values('datetime')
                             ax_anom.plot(line_df['Longitude'], line_df['Latitude'], 'k-', linewidth=1, alpha=0.7, label=sheet if len(selected_sheets)==1 else None)
-                        # Mark start and end points
+                        # Start/end markers
                         for sheet in selected_sheets:
                             line_df = plot_df[plot_df['Sheet_Name'] == sheet].dropna(subset=['Longitude', 'Latitude']).sort_values('datetime')
                             if len(line_df) >= 2:
@@ -452,13 +407,8 @@ if uploaded_file is not None:
                                 end = line_df.iloc[-1]
                                 ax_anom.plot(start['Longitude'], start['Latitude'], 'go', markersize=8, markeredgecolor='black')
                                 ax_anom.plot(end['Longitude'], end['Latitude'], 'ro', markersize=8, markeredgecolor='black')
-                                ax_anom.annotate(f"{start['datetime'].strftime('%d/%m/%Y')}", 
-                                                 (start['Longitude'], start['Latitude']), 
-                                                 textcoords="offset points", xytext=(5,5), fontsize=8)
-                                ax_anom.annotate(f"{end['datetime'].strftime('%d/%m/%Y')}", 
-                                                 (end['Longitude'], end['Latitude']), 
-                                                 textcoords="offset points", xytext=(5,-10), fontsize=8)
-                        # Custom legend for start/end
+                                ax_anom.annotate(start['datetime'].strftime('%d/%m/%Y'), (start['Longitude'], start['Latitude']), textcoords="offset points", xytext=(5,5), fontsize=8)
+                                ax_anom.annotate(end['datetime'].strftime('%d/%m/%Y'), (end['Longitude'], end['Latitude']), textcoords="offset points", xytext=(5,-10), fontsize=8)
                         from matplotlib.lines import Line2D
                         legend_elements = [Line2D([0], [0], marker='o', color='w', label='Start', markerfacecolor='g', markersize=8),
                                            Line2D([0], [0], marker='o', color='w', label='End', markerfacecolor='r', markersize=8)]
@@ -470,15 +420,7 @@ if uploaded_file is not None:
                     st.pyplot(fig_anom)
                     plt.close(fig_anom)
                 else:
-                    if gridding_method == "Linear":
-                        grid_meth = 'linear'
-                    elif gridding_method == "Cubic":
-                        grid_meth = 'cubic'
-                    elif gridding_method == "RBF (Thin Plate Spline)":
-                        grid_meth = 'rbf'
-                    else:
-                        grid_meth = 'linear'
-                    
+                    grid_meth = {'Linear':'linear', 'Cubic':'cubic', 'RBF (Thin Plate Spline)':'rbf'}.get(gridding_method, 'linear')
                     try:
                         X, Y, Z_grid = gridded_anomaly_map(x, y, z, method=grid_meth, grid_resolution=grid_resolution)
                         fig_anom, ax_anom = plt.subplots(figsize=(10, 8))
@@ -488,7 +430,6 @@ if uploaded_file is not None:
                             for sheet in selected_sheets:
                                 line_df = plot_df[plot_df['Sheet_Name'] == sheet].dropna(subset=['Longitude', 'Latitude']).sort_values('datetime')
                                 ax_anom.plot(line_df['Longitude'], line_df['Latitude'], 'k-', linewidth=1.5, alpha=0.8, label=sheet if len(selected_sheets)==1 else None)
-                            # Mark start and end points
                             for sheet in selected_sheets:
                                 line_df = plot_df[plot_df['Sheet_Name'] == sheet].dropna(subset=['Longitude', 'Latitude']).sort_values('datetime')
                                 if len(line_df) >= 2:
@@ -496,26 +437,22 @@ if uploaded_file is not None:
                                     end = line_df.iloc[-1]
                                     ax_anom.plot(start['Longitude'], start['Latitude'], 'go', markersize=8, markeredgecolor='black')
                                     ax_anom.plot(end['Longitude'], end['Latitude'], 'ro', markersize=8, markeredgecolor='black')
-                                    ax_anom.annotate(f"{start['datetime'].strftime('%d/%m/%Y')}", 
-                                                     (start['Longitude'], start['Latitude']), 
-                                                     textcoords="offset points", xytext=(5,5), fontsize=8)
-                                    ax_anom.annotate(f"{end['datetime'].strftime('%d/%m/%Y')}", 
-                                                     (end['Longitude'], end['Latitude']), 
-                                                     textcoords="offset points", xytext=(5,-10), fontsize=8)
-                            # Custom legend for start/end
+                                    ax_anom.annotate(start['datetime'].strftime('%d/%m/%Y'), (start['Longitude'], start['Latitude']), textcoords="offset points", xytext=(5,5), fontsize=8)
+                                    ax_anom.annotate(end['datetime'].strftime('%d/%m/%Y'), (end['Longitude'], end['Latitude']), textcoords="offset points", xytext=(5,-10), fontsize=8)
                             from matplotlib.lines import Line2D
                             legend_elements = [Line2D([0], [0], marker='o', color='w', label='Start', markerfacecolor='g', markersize=8),
                                                Line2D([0], [0], marker='o', color='w', label='End', markerfacecolor='r', markersize=8)]
                             ax_anom.legend(handles=legend_elements, loc='best')
                         ax_anom.set_xlabel('Longitude')
                         ax_anom.set_ylabel('Latitude')
-                        ax_anom.set_title(f'Gridded {anomaly_type} ({gridding_method}) dengan lintasan hitam')
+                        ax_anom.set_title(f'Gridded {anomaly_type} ({gridding_method})')
                         ax_anom.grid(True, alpha=0.3)
                         st.pyplot(fig_anom)
                         plt.close(fig_anom)
                     except Exception as e:
                         st.error(f"Gagal membuat grid: {e}")
-            # ========== PROFIL JARAK ==========
+            
+            # ---------- Distance profile ----------
             st.header("📏 Profil Anomali Sepanjang Jarak")
             for sheet in selected_sheets:
                 prof_df = plot_df[plot_df['Sheet_Name'] == sheet].dropna(subset=[anomaly_type, 'Longitude', 'Latitude']).sort_values('datetime')
@@ -530,7 +467,7 @@ if uploaded_file is not None:
                     st.pyplot(fig_prof)
                     plt.close(fig_prof)
             
-            # ========== DOWNLOAD ==========
+            # ---------- Download ----------
             st.header("💾 Download Data")
             output_cols = ['Sheet_Name', 'datetime', 'Latitude', 'Longitude', 'Easting', 'Northing',
                            'Field', 'Field_filtered', 'Altitude', 'Altitude_filtered', 'Depth', 'Line_Name',
@@ -538,6 +475,6 @@ if uploaded_file is not None:
             output_cols = [c for c in output_cols if c in final_df.columns]
             output_df = final_df[output_cols]
             csv = output_df.to_csv(index=False).encode('utf-8')
-            st.download_button("📥 Download CSV", csv, "marine_magnetic_gridded.csv", "text/csv")
+            st.download_button("📥 Download CSV", csv, "marine_magnetic_processed.csv", "text/csv")
 else:
     st.info("⬅️ Upload file Excel atau CSV.")
