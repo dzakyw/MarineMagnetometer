@@ -381,12 +381,12 @@ if uploaded_file is not None:
             
             # ========== GRIDDING & PETA ANOMALI ==========
             st.header(f"🗺️ Peta {anomaly_type} - Gridding ({gridding_method})")
-            grid_df = plot_df.dropna(subset=['Easting', 'Northing', anomaly_type]).copy()
+            grid_df = plot_df.dropna(subset=['Longitude', 'Latitude', anomaly_type]).copy()
             if len(grid_df) < 4:
                 st.warning("Tidak cukup titik untuk membuat grid (minimal 4 titik).")
             else:
-                x = grid_df['Easting'].values
-                y = grid_df['Northing'].values
+                x = grid_df['Longitude'].values
+                y = grid_df['Latitude'].values
                 z = grid_df[anomaly_type].values
                 
                 if gridding_method == "Tanpa Grid (scatter)":
@@ -397,8 +397,8 @@ if uploaded_file is not None:
                         for sheet in selected_sheets:
                             line_df = plot_df[plot_df['Sheet_Name'] == sheet].dropna(subset=['Longitude', 'Latitude']).sort_values('datetime')
                             ax_anom.plot(line_df['Longitude'], line_df['Latitude'], 'k-', linewidth=1, alpha=0.7)
-                    ax_anom.set_xlabel('Easting')
-                    ax_anom.set_ylabel('Northing')
+                    ax_anom.set_xlabel('Longitude')
+                    ax_anom.set_ylabel('Latitude')
                     ax_anom.set_title(f'Scatter plot {anomaly_type} (tanpa grid)')
                     ax_anom.grid(True, alpha=0.3)
                     st.pyplot(fig_anom)
