@@ -252,7 +252,7 @@ if uploaded_file is not None:
     elif field_method in ["Moving Average", "Savitzky-Golay"]:
         field_params['window'] = st.sidebar.slider("Window size", 3, 51, 11, 2)
     elif field_method == "Butterworth Lowpass":
-        field_params['cutoff'] = st.sidebar.slider("Cutoff frequency (0-0.5)", 0.01, 0.5, 0.1, 0.01)
+        field_params['cutoff'] = st.sidebar.slider("Cutoff frequency (0-0.5)", 0.01, 0.1, 0.05, 0.01)
     
     alt_method = st.sidebar.selectbox("Filter Altitude", ["None", "Hampel (despiking)", "Moving Average", "Savitzky-Golay"])
     alt_params = {}
