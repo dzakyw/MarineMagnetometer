@@ -334,36 +334,45 @@ if uploaded_file is not None:
                     # Convert column names to lowercase for case-insensitive matching
                     igrf_df.columns = igrf_df.columns.str.lower()
                     
-                    # Check if we have 'datetime' and 'igrf' columns
-                    if 'datetime' in igrf_df.columns and 'igrf' in igrf_df.columns:
-                        # Parse datetime column (flexible format)
-                        igrf_df['datetime'] = pd.to_datetime(igrf_df['datetime'], utc=True, format='mixed')
-                        # Merge
-                        survey_df = survey_df.merge(igrf_df[['datetime', 'igrf']], on='datetime', how='left')
-                        survey_df['IGRF'] = survey_df['igrf']   # rename to uppercase
-                    elif 'igrf' in igrf_df.columns and 'datetime' not in igrf_df.columns:
-                        # No datetime column – assume same order
-                        if len(igrf_df) == len(survey_df):
-                            survey_df['IGRF'] = igrf_df['igrf'].values
-                        else:
-                            st.error(f"IGRF file has {len(igrf_df)} rows, but survey has {len(survey_df)} rows. IGRF set to 0.")
-                            survey_df['IGRF'] = 0.0
-                    else:
-                        st.error("File must contain columns 'datetime' and 'IGRF' (case-insensitive). IGRF set to 0.")
-                        survey_df['IGRF'] = 0.0
+                    # Check for required columns
+                    if 'datetime' not in igrf_df.columns or 'igrf' not in igrf_df.columns:
+                        raise ValueError("File must contain columns 'datetime' and 'IGRF' (case-insensitive).")
                     
-                    # Drop the temporary lowercase column if it exists
-                    if 'igrf' in survey_df.columns:
-                        survey_df = survey_df.drop(columns=['igrf'])
+                    # Convert IGRF datetime to datetime and extract date only
+                    igrf_df['datetime'] = pd.to_datetime(igrf_df['datetime'], utc=True, format='mixed')
+                    igrf_df['date'] = igrf_df['datetime'].dt.date   # date part (no time)
+                    
+                    # If multiple IGRF entries on same date, keep the first one (or average? we use first)
+                    igrf_df = igrf_df.drop_duplicates(subset=['date'], keep='first')
+                    
+                    # Extract date from survey datetime
+                    survey_df['date'] = survey_df['datetime'].dt.date
+                    
+                    # Merge on date
+                    survey_df = survey_df.merge(igrf_df[['date', 'igrf']], on='date', how='left')
+                    
+                    # Rename and fill missing
+                    survey_df['IGRF'] = survey_df['igrf']
+                    survey_df.drop(columns=['igrf', 'date'], inplace=True, errors='ignore')
+                    
+                    # Fill NaN IGRF with 0 (or could use a constant, but 0 is safe)
+                    if survey_df['IGRF'].isna().any():
+                        st.warning("Some survey dates have no matching IGRF entry. Those points will use IGRF = 0.")
+                        survey_df['IGRF'].fillna(0.0, inplace=True)
                 
                 except Exception as e:
-                    st.error(f"Error reading IGRF file: {e}. IGRF set to 0.")
+                    st.error(f"Error reading IGRF file: {e}. IGRF set to 0 for all points.")
                     survey_df['IGRF'] = 0.0
             
-            # If no IGRF file was uploaded or the option was not selected
+            # If no IGRF file was uploaded or the option is not selected
             else:
                 survey_df['IGRF'] = 0.0
-            survey_df['IGRF'] = survey_df['IGRF'].fillna(0.0)
+            
+            # Ensure IGRF column exists and is numeric
+            if 'IGRF' not in survey_df.columns:
+                survey_df['IGRF'] = 0.0
+            else:
+                survey_df['IGRF'] = pd.to_numeric(survey_df['IGRF'], errors='coerce').fillna(0.0)
             survey_df['TMI'] = survey_df['Field_filtered'] - survey_df['IGRF'] - survey_df['Diurnal_Correction']
             survey_df['Sheet_Name'] = sheet
             all_results.append(survey_df)
