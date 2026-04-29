@@ -272,7 +272,7 @@ if uploaded_file is not None:
     if igrf_option == "Constant value":
         constant_igrf = st.sidebar.number_input("Nilai IGRF konstan (nT):", value=45000.0, step=100.0)
     elif igrf_option == "Upload IGRF file (CSV)":
-        igrf_file = st.sidebar.file_uploader("Upload CSV dengan kolom 'datetime' atau index dan 'IGRF'", type=['csv'])
+        igrf_file = st.sidebar.file_uploader("Upload CSV dengan kolom 'datetime' atau index dan 'IGRF'", type=['csv', 'xlsx'])
         if igrf_file:
             st.sidebar.success("File IGRF terupload.")
 
@@ -313,48 +313,45 @@ if uploaded_file is not None:
                 survey_df['Diurnal_Correction'] = 0.0
             if igrf_option == "Constant value":
                 survey_df['IGRF'] = constant_igrf
-            elif igrf_option == "Upload IGRF file (CSV)" and igrf_file is not None:
+            elif igrf_option == "Upload IGRF file (Excel/CSV)" and igrf_file is not None:
                 try:
-                    # Try different delimiters automatically
-                    igrf_df = None
-                    for sep in [',', ';', '\t', '|']:
-                        try:
-                            igrf_df = pd.read_csv(igrf_file, sep=sep, encoding='utf-8')
-                            if igrf_df.shape[1] > 1:  # More than one column -> likely correct
-                                break
-                        except:
-                            continue
-                    if igrf_df is None:
-                        raise ValueError("Could not read CSV with any delimiter")
+                    # Baca file sesuai ekstensi
+                    if igrf_file.name.endswith('.xlsx'):
+                        igrf_df = pd.read_excel(igrf_file)
+                    else:
+                        # Coba berbagai delimiter untuk CSV
+                        igrf_df = None
+                        for sep in [',', ';', '\t']:
+                            try:
+                                igrf_df = pd.read_csv(igrf_file, sep=sep)
+                                if igrf_df.shape[1] > 1:
+                                    break
+                            except:
+                                continue
+                        if igrf_df is None:
+                            raise ValueError("Tidak dapat membaca file CSV dengan delimiter yang umum.")
                     
-                    # Show preview to help debug
-                    st.write("Preview IGRF file (first 3 rows):", igrf_df.head(3))
-                    
-                    # Convert column names to lowercase for case-insensitive matching
+                    # Ubah nama kolom menjadi lowercase untuk fleksibilitas
                     igrf_df.columns = igrf_df.columns.str.lower()
                     
-                    # Check required columns
+                    # Cek apakah kolom 'datetime' dan 'igrf' ada
                     if 'datetime' in igrf_df.columns and 'igrf' in igrf_df.columns:
-                        # Parse datetime column with flexible format
                         igrf_df['datetime'] = pd.to_datetime(igrf_df['datetime'], utc=True, format='mixed')
                         survey_df = survey_df.merge(igrf_df[['datetime', 'igrf']], on='datetime', how='left')
                         survey_df['IGRF'] = survey_df['igrf']
                     elif 'igrf' in igrf_df.columns and 'datetime' not in igrf_df.columns:
-                        # Assume same order
+                        # Tidak ada kolom datetime, asumsikan urutan sama
                         if len(igrf_df) == len(survey_df):
                             survey_df['IGRF'] = igrf_df['igrf'].values
                         else:
-                            st.error(f"IGRF file has {len(igrf_df)} rows but survey data has {len(survey_df)} rows. Cannot match by index.")
+                            st.error(f"Jumlah baris IGRF ({len(igrf_df)}) tidak sama dengan data survei ({len(survey_df)}). IGRF diisi 0.")
                             survey_df['IGRF'] = 0.0
                     else:
-                        st.error("IGRF CSV must have columns 'datetime' and 'IGRF' (case-insensitive) OR exactly one column 'IGRF' with same number of rows as survey data.")
+                        st.error("File IGRF harus memiliki kolom 'datetime' dan 'IGRF' (case-insensitive) atau hanya kolom 'IGRF' dengan jumlah baris sama.")
                         survey_df['IGRF'] = 0.0
                 except Exception as e:
-                    st.error(f"Error reading IGRF file: {e}")
-                    st.info("Expected CSV format: comma or semicolon separated, with headers 'datetime' and 'IGRF'. Example:\n```\ndatetime,IGRF\n2025-04-29 10:00:00,44500.5\n```")
+                    st.error(f"Gagal membaca file IGRF: {e}")
                     survey_df['IGRF'] = 0.0
-            else:
-                survey_df['IGRF'] = 0.0
             survey_df['IGRF'] = survey_df['IGRF'].fillna(0.0)
             survey_df['TMI'] = survey_df['Field_filtered'] - survey_df['IGRF'] - survey_df['Diurnal_Correction']
             survey_df['Sheet_Name'] = sheet
