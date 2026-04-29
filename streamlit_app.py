@@ -315,11 +315,11 @@ if uploaded_file is not None:
                 survey_df['IGRF'] = constant_igrf
             elif igrf_option == "Upload IGRF file (Excel/CSV)" and igrf_file is not None:
                 try:
-                    # Baca file sesuai ekstensi
+                    # Read file based on extension
                     if igrf_file.name.endswith('.xlsx'):
                         igrf_df = pd.read_excel(igrf_file)
                     else:
-                        # Coba berbagai delimiter untuk CSV
+                        # Try different delimiters for CSV
                         igrf_df = None
                         for sep in [',', ';', '\t']:
                             try:
@@ -329,29 +329,40 @@ if uploaded_file is not None:
                             except:
                                 continue
                         if igrf_df is None:
-                            raise ValueError("Tidak dapat membaca file CSV dengan delimiter yang umum.")
+                            raise ValueError("Could not read CSV with any common delimiter.")
                     
-                    # Ubah nama kolom menjadi lowercase untuk fleksibilitas
+                    # Convert column names to lowercase for case-insensitive matching
                     igrf_df.columns = igrf_df.columns.str.lower()
                     
-                    # Cek apakah kolom 'datetime' dan 'igrf' ada
+                    # Check if we have 'datetime' and 'igrf' columns
                     if 'datetime' in igrf_df.columns and 'igrf' in igrf_df.columns:
+                        # Parse datetime column (flexible format)
                         igrf_df['datetime'] = pd.to_datetime(igrf_df['datetime'], utc=True, format='mixed')
+                        # Merge
                         survey_df = survey_df.merge(igrf_df[['datetime', 'igrf']], on='datetime', how='left')
-                        survey_df['IGRF'] = survey_df['igrf']
+                        survey_df['IGRF'] = survey_df['igrf']   # rename to uppercase
                     elif 'igrf' in igrf_df.columns and 'datetime' not in igrf_df.columns:
-                        # Tidak ada kolom datetime, asumsikan urutan sama
+                        # No datetime column – assume same order
                         if len(igrf_df) == len(survey_df):
                             survey_df['IGRF'] = igrf_df['igrf'].values
                         else:
-                            st.error(f"Jumlah baris IGRF ({len(igrf_df)}) tidak sama dengan data survei ({len(survey_df)}). IGRF diisi 0.")
+                            st.error(f"IGRF file has {len(igrf_df)} rows, but survey has {len(survey_df)} rows. IGRF set to 0.")
                             survey_df['IGRF'] = 0.0
                     else:
-                        st.error("File IGRF harus memiliki kolom 'datetime' dan 'IGRF' (case-insensitive) atau hanya kolom 'IGRF' dengan jumlah baris sama.")
+                        st.error("File must contain columns 'datetime' and 'IGRF' (case-insensitive). IGRF set to 0.")
                         survey_df['IGRF'] = 0.0
+                    
+                    # Drop the temporary lowercase column if it exists
+                    if 'igrf' in survey_df.columns:
+                        survey_df = survey_df.drop(columns=['igrf'])
+                
                 except Exception as e:
-                    st.error(f"Gagal membaca file IGRF: {e}")
+                    st.error(f"Error reading IGRF file: {e}. IGRF set to 0.")
                     survey_df['IGRF'] = 0.0
+            
+            # If no IGRF file was uploaded or the option was not selected
+            else:
+                survey_df['IGRF'] = 0.0
             survey_df['IGRF'] = survey_df['IGRF'].fillna(0.0)
             survey_df['TMI'] = survey_df['Field_filtered'] - survey_df['IGRF'] - survey_df['Diurnal_Correction']
             survey_df['Sheet_Name'] = sheet
