@@ -405,10 +405,10 @@ if uploaded_file is not None:
                                 end = line_df.iloc[-1]
                                 ax_anom.plot(start['Longitude'], start['Latitude'], 'go', markersize=8, markeredgecolor='black')
                                 ax_anom.plot(end['Longitude'], end['Latitude'], 'ro', markersize=8, markeredgecolor='black')
-                                ax_anom.annotate(f"{start['datetime'].strftime('%H:%M:%S')}", 
+                                ax_anom.annotate(f"{start['datetime']}", 
                                                  (start['Longitude'], start['Latitude']), 
                                                  textcoords="offset points", xytext=(5,5), fontsize=8)
-                                ax_anom.annotate(f"{end['datetime'].strftime('%H:%M:%S')}", 
+                                ax_anom.annotate(f"{end['datetime']}", 
                                                  (end['Longitude'], end['Latitude']), 
                                                  textcoords="offset points", xytext=(5,-10), fontsize=8)
                         # Custom legend for start/end
