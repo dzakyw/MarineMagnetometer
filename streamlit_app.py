@@ -314,15 +314,45 @@ if uploaded_file is not None:
             if igrf_option == "Constant value":
                 survey_df['IGRF'] = constant_igrf
             elif igrf_option == "Upload IGRF file (CSV)" and igrf_file is not None:
-                igrf_df = pd.read_csv(igrf_file)
-                if 'datetime' in igrf_df.columns:
-                    igrf_df['datetime'] = pd.to_datetime(igrf_df['datetime'], utc=True)
-                    survey_df = survey_df.merge(igrf_df[['datetime', 'IGRF']], on='datetime', how='left')
-                else:
-                    if len(igrf_df) == len(survey_df):
-                        survey_df['IGRF'] = igrf_df['IGRF'].values
+                try:
+                    # Try different delimiters automatically
+                    igrf_df = None
+                    for sep in [',', ';', '\t', '|']:
+                        try:
+                            igrf_df = pd.read_csv(igrf_file, sep=sep, encoding='utf-8')
+                            if igrf_df.shape[1] > 1:  # More than one column -> likely correct
+                                break
+                        except:
+                            continue
+                    if igrf_df is None:
+                        raise ValueError("Could not read CSV with any delimiter")
+                    
+                    # Show preview to help debug
+                    st.write("Preview IGRF file (first 3 rows):", igrf_df.head(3))
+                    
+                    # Convert column names to lowercase for case-insensitive matching
+                    igrf_df.columns = igrf_df.columns.str.lower()
+                    
+                    # Check required columns
+                    if 'datetime' in igrf_df.columns and 'igrf' in igrf_df.columns:
+                        # Parse datetime column with flexible format
+                        igrf_df['datetime'] = pd.to_datetime(igrf_df['datetime'], utc=True, format='mixed')
+                        survey_df = survey_df.merge(igrf_df[['datetime', 'igrf']], on='datetime', how='left')
+                        survey_df['IGRF'] = survey_df['igrf']
+                    elif 'igrf' in igrf_df.columns and 'datetime' not in igrf_df.columns:
+                        # Assume same order
+                        if len(igrf_df) == len(survey_df):
+                            survey_df['IGRF'] = igrf_df['igrf'].values
+                        else:
+                            st.error(f"IGRF file has {len(igrf_df)} rows but survey data has {len(survey_df)} rows. Cannot match by index.")
+                            survey_df['IGRF'] = 0.0
                     else:
+                        st.error("IGRF CSV must have columns 'datetime' and 'IGRF' (case-insensitive) OR exactly one column 'IGRF' with same number of rows as survey data.")
                         survey_df['IGRF'] = 0.0
+                except Exception as e:
+                    st.error(f"Error reading IGRF file: {e}")
+                    st.info("Expected CSV format: comma or semicolon separated, with headers 'datetime' and 'IGRF'. Example:\n```\ndatetime,IGRF\n2025-04-29 10:00:00,44500.5\n```")
+                    survey_df['IGRF'] = 0.0
             else:
                 survey_df['IGRF'] = 0.0
             survey_df['IGRF'] = survey_df['IGRF'].fillna(0.0)
