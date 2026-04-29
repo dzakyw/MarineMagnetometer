@@ -352,7 +352,6 @@ if uploaded_file is not None:
                 except Exception as e:
                     st.error(f"Gagal membaca file IGRF: {e}")
                     survey_df['IGRF'] = 0.0
-            survey_df['IGRF'] = survey_df['IGRF'].fillna(0.0)
             survey_df['TMI'] = survey_df['Field_filtered'] - survey_df['IGRF'] - survey_df['Diurnal_Correction']
             survey_df['Sheet_Name'] = sheet
             all_results.append(survey_df)
