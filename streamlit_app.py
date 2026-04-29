@@ -379,7 +379,7 @@ if uploaded_file is not None:
                 else:
                     st.info(f"Sheet {sheet}: Tidak ada data TMI untuk diplot.")
             
-            # ========== GRIDDING & PETA ANOMALI ==========
+            # ========== GRIDDING & PETA ANOMALI ========== #
             st.header(f"🗺️ Peta {anomaly_type} - Gridding ({gridding_method})")
             grid_df = plot_df.dropna(subset=['Longitude', 'Latitude', anomaly_type]).copy()
             if len(grid_df) < 4:
@@ -396,7 +396,26 @@ if uploaded_file is not None:
                     if show_track_lines:
                         for sheet in selected_sheets:
                             line_df = plot_df[plot_df['Sheet_Name'] == sheet].dropna(subset=['Longitude', 'Latitude']).sort_values('datetime')
-                            ax_anom.plot(line_df['Longitude'], line_df['Latitude'], 'k-', linewidth=1, alpha=0.7)
+                            ax_anom.plot(line_df['Longitude'], line_df['Latitude'], 'k-', linewidth=1, alpha=0.7, label=sheet if len(selected_sheets)==1 else None)
+                        # Mark start and end points
+                        for sheet in selected_sheets:
+                            line_df = plot_df[plot_df['Sheet_Name'] == sheet].dropna(subset=['Longitude', 'Latitude']).sort_values('datetime')
+                            if len(line_df) >= 2:
+                                start = line_df.iloc[0]
+                                end = line_df.iloc[-1]
+                                ax_anom.plot(start['Longitude'], start['Latitude'], 'go', markersize=8, markeredgecolor='black')
+                                ax_anom.plot(end['Longitude'], end['Latitude'], 'ro', markersize=8, markeredgecolor='black')
+                                ax_anom.annotate(f"{start['datetime'].strftime('%H:%M:%S')}", 
+                                                 (start['Longitude'], start['Latitude']), 
+                                                 textcoords="offset points", xytext=(5,5), fontsize=8)
+                                ax_anom.annotate(f"{end['datetime'].strftime('%H:%M:%S')}", 
+                                                 (end['Longitude'], end['Latitude']), 
+                                                 textcoords="offset points", xytext=(5,-10), fontsize=8)
+                        # Custom legend for start/end
+                        from matplotlib.lines import Line2D
+                        legend_elements = [Line2D([0], [0], marker='o', color='w', label='Start', markerfacecolor='g', markersize=8),
+                                           Line2D([0], [0], marker='o', color='w', label='End', markerfacecolor='r', markersize=8)]
+                        ax_anom.legend(handles=legend_elements, loc='best')
                     ax_anom.set_xlabel('Longitude')
                     ax_anom.set_ylabel('Latitude')
                     ax_anom.set_title(f'Scatter plot {anomaly_type} (tanpa grid)')
@@ -422,8 +441,25 @@ if uploaded_file is not None:
                             for sheet in selected_sheets:
                                 line_df = plot_df[plot_df['Sheet_Name'] == sheet].dropna(subset=['Longitude', 'Latitude']).sort_values('datetime')
                                 ax_anom.plot(line_df['Longitude'], line_df['Latitude'], 'k-', linewidth=1.5, alpha=0.8, label=sheet if len(selected_sheets)==1 else None)
-                            if len(selected_sheets) > 1:
-                                ax_anom.legend(fontsize=8)
+                            # Mark start and end points
+                            for sheet in selected_sheets:
+                                line_df = plot_df[plot_df['Sheet_Name'] == sheet].dropna(subset=['Longitude', 'Latitude']).sort_values('datetime')
+                                if len(line_df) >= 2:
+                                    start = line_df.iloc[0]
+                                    end = line_df.iloc[-1]
+                                    ax_anom.plot(start['Longitude'], start['Latitude'], 'go', markersize=8, markeredgecolor='black')
+                                    ax_anom.plot(end['Longitude'], end['Latitude'], 'ro', markersize=8, markeredgecolor='black')
+                                    ax_anom.annotate(f"{start['datetime'].strftime('%H:%M:%S')}", 
+                                                     (start['Longitude'], start['Latitude']), 
+                                                     textcoords="offset points", xytext=(5,5), fontsize=8)
+                                    ax_anom.annotate(f"{end['datetime'].strftime('%H:%M:%S')}", 
+                                                     (end['Longitude'], end['Latitude']), 
+                                                     textcoords="offset points", xytext=(5,-10), fontsize=8)
+                            # Custom legend for start/end
+                            from matplotlib.lines import Line2D
+                            legend_elements = [Line2D([0], [0], marker='o', color='w', label='Start', markerfacecolor='g', markersize=8),
+                                               Line2D([0], [0], marker='o', color='w', label='End', markerfacecolor='r', markersize=8)]
+                            ax_anom.legend(handles=legend_elements, loc='best')
                         ax_anom.set_xlabel('Longitude')
                         ax_anom.set_ylabel('Latitude')
                         ax_anom.set_title(f'Gridded {anomaly_type} ({gridding_method}) dengan lintasan hitam')
@@ -432,7 +468,6 @@ if uploaded_file is not None:
                         plt.close(fig_anom)
                     except Exception as e:
                         st.error(f"Gagal membuat grid: {e}")
-            
             # ========== PROFIL JARAK ==========
             st.header("📏 Profil Anomali Sepanjang Jarak")
             for sheet in selected_sheets:
