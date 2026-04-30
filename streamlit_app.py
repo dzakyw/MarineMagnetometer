@@ -237,7 +237,7 @@ def ishihara_leveling(df, d0_km, t0_hours, d1_km=15.0, max_iter=10, tol=0.1):
         d0_km: weight distance (km) – parameter in W(d)
         t0_hours: half filtering width (hours) – full width = 2*t0
         d1_km: distance limit (km) – data outside this distance are ignored
-        max_iter: number of iterations (paper uses iterative scheme)
+        max_iter: number of iterations
         tol: stop when max change < tol (nT)
     Returns:
         corrected TMI as numpy array
@@ -245,33 +245,31 @@ def ishihara_leveling(df, d0_km, t0_hours, d1_km=15.0, max_iter=10, tol=0.1):
     # Prepare data: ensure sorted by time
     df = df.sort_values('datetime').copy().reset_index(drop=True)
     n = len(df)
-    coords = np.radians(df[['Latitude', 'Longitude']].values)
-    times = df['datetime'].values
-    t_seconds = (times - times.min()).total_seconds().values
-    # Precompute distances using KDTree (in meters)
-    from scipy.spatial import cKDTree
-    # convert lon/lat to meters: approximate using 111 km per degree (simple)
+    times = df['datetime']  # pandas Series
+    # Convert to seconds since first point
+    t_seconds = (times - times.min()).dt.total_seconds().values  # float array
+
+    # Approximate coordinates in meters for KDTree
     km_per_deg_lat = 111.0
     km_per_deg_lon = 111.0 * np.cos(np.radians(df['Latitude'].mean()))
     x = df['Longitude'].values * km_per_deg_lon
     y = df['Latitude'].values * km_per_deg_lat
     coords_m = np.column_stack((x, y))
+    from scipy.spatial import cKDTree
     tree = cKDTree(coords_m)
     d1_m = d1_km * 1000.0
-    
+
     # Precompute neighbor indices within d1
     neighbor_indices = []
     for i in range(n):
         idx = tree.query_ball_point(coords_m[i], d1_m)
-        neighbor_indices.append([j for j in idx if j != i])  # exclude self
-    
+        neighbor_indices.append([j for j in idx if j != i])
+
     def weight_func(d_m, d0_m):
-        # W(d) = 1 / (1 + (d/d0)^2)^2
         r = d_m / d0_m
         return 1.0 / ((1.0 + r*r)**2)
-    
+
     def T_func(dt_sec, t1_sec):
-        # T(t) = 0 for |t| < t1, ramp between t1 and 2t1, 1 for >2t1
         at = np.abs(dt_sec)
         if at <= t1_sec:
             return 0.0
@@ -279,28 +277,24 @@ def ishihara_leveling(df, d0_km, t0_hours, d1_km=15.0, max_iter=10, tol=0.1):
             return at/t1_sec - 1.0
         else:
             return 1.0
-    
+
     def G_func(dt_sec, t0_sec):
-        # Gaussian filter: exp(-4.5*(t/t0)^2) for |t| < t0, else 0
         at = np.abs(dt_sec)
         if at >= t0_sec:
             return 0.0
         else:
             return np.exp(-4.5 * (at/t0_sec)**2)
-    
+
     d0_m = d0_km * 1000.0
     t0_sec = t0_hours * 3600.0
-    t1_sec = t0_sec   # as per paper: t1 = t0
-    f1 = 0.2  # threshold constants from paper
+    t1_sec = t0_sec
+    f1 = 0.2
     f2 = 0.05
-    
-    # Initial anomalies a (original TMI)
+
     a = df['TMI'].values.copy()
-    c = np.zeros(n)   # initial correction = 0
-    
-    # Iteration
+    c = np.zeros(n)
+
     for it in range(max_iter):
-        # Compute expected corrections (δ_i) using Eq.3
         numer = np.zeros(n)
         denom = np.zeros(n)
         for i in range(n):
@@ -322,9 +316,7 @@ def ishihara_leveling(df, d0_km, t0_hours, d1_km=15.0, max_iter=10, tol=0.1):
                 numer[i] = sum_w_val
                 denom[i] = sum_w
         delta = np.divide(numer, denom, out=np.zeros_like(numer), where=denom>0)
-        
-        # Now apply temporal Gaussian filter to delta (Eq.6)
-        # Compute filtered correction new_c using Gaussian weighting
+
         new_c = np.zeros(n)
         for i in range(n):
             sum_g = 0.0
@@ -334,7 +326,6 @@ def ishihara_leveling(df, d0_km, t0_hours, d1_km=15.0, max_iter=10, tol=0.1):
                 g = G_func(dt_sec, t0_sec)
                 if g == 0:
                     continue
-                # Use filtering weight y_k = denom[k] (as per paper)
                 y_k = denom[k] if denom[k] > 0 else 1.0
                 sum_g += g * y_k
                 sum_g_val += g * y_k * delta[k]
@@ -342,33 +333,25 @@ def ishihara_leveling(df, d0_km, t0_hours, d1_km=15.0, max_iter=10, tol=0.1):
                 new_c[i] = sum_g_val / sum_g
             else:
                 new_c[i] = 0.0
-        
-        # Apply stability thresholds (Eq.11)
+
+        # Apply damping based on filtering weight (Eq.11)
         for i in range(n):
-            fi = denom[i]   # filtering weight
+            fi = denom[i]
             if fi > f1:
-                # Eq.11a: c_i = β1i/fi + β2i/fi (but we already have new_c as β1i/fi?? careful)
-                # Our new_c already includes the division by sum_g, which approximates the full expression.
-                # For simplicity, we keep new_c as is and only suppress where fi is small.
                 pass
             elif fi > f2:
-                # damp correction
                 new_c[i] = new_c[i] * (fi / f1)
             elif fi > 0:
                 new_c[i] = new_c[i] * (fi / f1) * (fi / f2)
             else:
                 new_c[i] = 0.0
-        
-        # Check convergence
+
         change = np.max(np.abs(new_c - c))
         c = new_c
         if change < tol:
             break
-    
-    # Corrected anomaly
-    corrected = a + c
-    return corrected
 
+    return a + c
 def crossover_adjustment(df, line_col='Line_Name'):
     """
     Perform line‑leveling using crossovers (profile tying).
