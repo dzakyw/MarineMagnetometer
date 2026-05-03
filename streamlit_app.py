@@ -121,12 +121,19 @@ def interpolate_nan(series, method='cubic'):
 def moving_average(series, window=5):
     return series.rolling(window=window, center=True, min_periods=1).mean()
 
-def butterworth_filter(series, cutoff=0.1, fs=1.0, order=4, btype='low'):
+def butterworth_filter(series, cutoff=0.01, fs=None, order=4):
+    if fs is None:
+        # estimate from datetime index if available
+        if isinstance(series.index, pd.DatetimeIndex):
+            dt = np.median(np.diff(series.index.values.astype('int64')//10**9))
+            fs = 1.0 / dt if dt > 0 else 1.0
+        else:
+            fs = 1.0
     nyquist = 0.5 * fs
     normal_cutoff = cutoff / nyquist
-    b, a = butter(order, normal_cutoff, btype=btype, analog=False)
-    if series.isna().any():
-        series = series.interpolate(method='linear', limit_direction='both')
+    if normal_cutoff >= 1.0:
+        return series  # cutoff terlalu tinggi
+    b, a = butter(order, normal_cutoff, btype='low', analog=False)
     return filtfilt(b, a, series)
 
 def apply_filter(series, method, interp_method='cubic', **params):
